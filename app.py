@@ -1,65 +1,61 @@
 import os
-from dotenv import load_dotenv
-
-import openai
+import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-
-load_dotenv()
+from dotenv import load_dotenv
 
 # --- Configuração Inicial ---
+load_dotenv() # Carrega as variáveis do arquivo .env para o ambiente local
 app = Flask(__name__)
-# A linha abaixo permite que o seu Frontend (que rodará em outro endereço) se comunique com o Backend.
 CORS(app) 
 
-# !! IMPORTANTE !!
-# Cole aqui sua chave de API da OpenAI. Você pode obter uma no site da OpenAI.
-# Lembre-se de manter esta chave em segredo.
-openai.api_key = os.getenv('OPENAI_API_KEY')
+# --- Configura a API do Gemini ---
+# A biblioteca vai ler a chave da variável de ambiente que configuramos na Render
+try:
+    genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    print("Modelo Gemini configurado com sucesso!")
+except Exception as e:
+    print(f"Erro ao configurar o modelo Gemini: {e}")
+    model = None
 
 # --- A Rota Principal da API ---
 @app.route('/generate-prompt', methods=['POST'])
 def generate_prompt():
+    if not model:
+        return jsonify({'error': 'Modelo Gemini não foi configurado corretamente.'}), 500
+
     try:
         data = request.json
         simple_idea = data.get('idea')
-        style = data.get('style', 'photorealistic') # 'photorealistic' como padrão
+        style = data.get('style', 'photorealistic')
 
         if not simple_idea:
             return jsonify({'error': 'A ideia não pode estar vazia.'}), 400
 
-        # Aqui está a "mágica": o prompt que instrui a IA a criar o prompt avançado.
-        system_prompt = """
-        You are an advanced prompt generator for AI image models like DALL-E 3 and Midjourney.
-        Your task is to transform a user's simple idea into a detailed, structured, and optimized prompt in English.
-        Expand the idea by adding context, environment, lighting, atmosphere, and visual style.
-        Include details about characters (appearance, expression, clothing), setting (time of day, landscape, background),
-        artistic style, predominant colors, and technical camera details (camera angle, lens, focus).
-        The final output must be only the generated prompt, without any introduction or explanation.
+        # O prompt de instrução para o Gemini
+        instruction_prompt = f"""
+        Você é um especialista em engenharia de prompt para IAs de imagem.
+        Transforme a seguinte ideia simples em um prompt detalhado, estruturado e otimizado em inglês.
+        Ideia do usuário: "{simple_idea}"
+        Estilo desejado: "{style}"
+
+        Regras para o prompt gerado:
+        - Expanda a ideia adicionando contexto, ambiente, iluminação cinematográfica, atmosfera e detalhes visuais ricos.
+        - Inclua detalhes sobre personagens (aparência, expressão, roupas), cenário (hora do dia, paisagem, fundo), estilo artístico e detalhes técnicos da câmera (ângulo, lente, foco).
+        - O resultado deve ser apenas o prompt em inglês, fluido e natural, sem nenhuma introdução ou explicação.
         """
 
-        # O prompt do usuário, formatado para a IA
-        user_prompt = f"Idea: '{simple_idea}'. Style: '{style}'."
+        # Chamada para a API do Gemini
+        response = model.generate_content(instruction_prompt)
 
-        # Chamada para a API da OpenAI
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7 # Um valor que controla a criatividade
-        )
-
-        advanced_prompt = response.choices[0].message.content.strip()
-
-        return jsonify({'advanced_prompt': advanced_prompt})
+        return jsonify({'advanced_prompt': response.text})
 
     except Exception as e:
-        print(f"Erro: {e}")
-        return jsonify({'error': 'Ocorreu um erro ao gerar o prompt.'}), 500
+        print(f"Erro durante a geração de conteúdo: {e}")
+        return jsonify({'error': f'Ocorreu um erro ao gerar o prompt: {e}'}), 500
 
-# --- Roda o Servidor ---
+# --- Roda o Servidor com Gunicorn (configurado na Render) ---
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port)
