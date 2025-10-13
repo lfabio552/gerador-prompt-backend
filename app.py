@@ -13,13 +13,14 @@ CORS(app)
 # A biblioteca vai ler a chave da variável de ambiente que configuramos na Render
 try:
     genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
+    # MUDANÇA AQUI: Usando um modelo mais acessível para o nível gratuito
+    model = genai.GenerativeModel('gemini-pro')
     print("Modelo Gemini configurado com sucesso!")
 except Exception as e:
     print(f"Erro ao configurar o modelo Gemini: {e}")
     model = None
 
-# --- A Rota Principal da API ---
+# --- ROTA PARA O GERADOR DE PROMPTS DE IMAGEM ---
 @app.route('/generate-prompt', methods=['POST'])
 def generate_prompt():
     if not model:
@@ -55,7 +56,48 @@ def generate_prompt():
         print(f"Erro durante a geração de conteúdo: {e}")
         return jsonify({'error': f'Ocorreu um erro ao gerar o prompt: {e}'}), 500
 
-# --- Roda o Servidor com Gunicorn (configurado na Render) ---
+# --- NOVA ROTA PARA O GERADOR VEO 3 ---
+@app.route('/generate-veo3-prompt', methods=['POST'])
+def generate_veo3_prompt():
+    if not model:
+        return jsonify({'error': 'Modelo Gemini não foi configurado corretamente.'}), 500
+    
+    try:
+        data = request.json
+        # Coletando todos os dados do formulário
+        scene = data.get('scene')
+        style = data.get('style')
+        camera = data.get('camera')
+        lighting = data.get('lighting')
+        audio = data.get('audio')
+
+        if not scene:
+            return jsonify({'error': 'A descrição da cena não pode estar vazia.'}), 400
+
+        # Instrução detalhada para o Gemini, agora como um "diretor de cinema"
+        instruction_prompt = f"""
+        Você é um especialista em gerar prompts para IAs de vídeo como Google Veo. Sua tarefa é pegar os componentes estruturados fornecidos pelo usuário e montá-los em um prompt de vídeo coeso, detalhado e técnico em inglês.
+
+        Componentes fornecidos pelo usuário:
+        - Cena Principal: {scene}
+        - Estilo Visual: {style}
+        - Detalhes da Câmera: {camera}
+        - Iluminação: {lighting}
+        - Design de Áudio: {audio}
+
+        Combine esses elementos em um parágrafo único e cinematográfico. Adicione detalhes técnicos relevantes que a IA de vídeo entenderia, como tipo de lente, movimento sutil, e especificidade de áudio. O resultado deve ser apenas o prompt final em inglês.
+        """
+
+        # Chamada para a API do Gemini
+        response = model.generate_content(instruction_prompt)
+
+        return jsonify({'advanced_prompt': response.text})
+
+    except Exception as e:
+        print(f"Erro durante a geração de conteúdo VEO 3: {e}")
+        return jsonify({'error': f'Ocorreu um erro ao gerar o prompt de vídeo: {e}'}), 500
+
+# --- Roda o Servidor (usado localmente) ---
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
