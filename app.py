@@ -13,8 +13,8 @@ CORS(app)
 # A biblioteca vai ler a chave da variável de ambiente que configuramos na Render
 try:
     genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
-    # MUDANÇA AQUI: Usando um modelo mais acessível para o nível gratuito
-    model = genai.GenerativeModel('gemini-pro')
+    # MUDANÇA AQUI: Usando o modelo mais novo disponível na sua lista (Novembro 2025)
+    model = genai.GenerativeModel('gemini-2.5-flash')
     print("Modelo Gemini configurado com sucesso!")
 except Exception as e:
     print(f"Erro ao configurar o modelo Gemini: {e}")
