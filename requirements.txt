@@ -46,4 +46,4 @@ typing_extensions==4.15.0
 uritemplate==4.2.0
 urllib3==2.5.0
 Werkzeug==3.1.3
-youtube-transcript-api==0.6.3
+git+https://github.com/jdepoix/youtube-transcript-api.git@master#egg=youtube-transcript-api
