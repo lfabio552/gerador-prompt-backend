@@ -5,6 +5,12 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
+import youtube_transcript_api
+# --- CÓDIGO ESPIÃO ---
+print(f"🕵️ DETETIVE: A biblioteca está sendo carregada deste lugar: {youtube_transcript_api.__file__}")
+print(f"🕵️ DETETIVE: O que tem nela? {dir(youtube_transcript_api)}")
+# ---------------------
+
 # --- Configuração Inicial ---
 load_dotenv() 
 app = Flask(__name__)

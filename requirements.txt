@@ -3,4 +3,4 @@ flask-cors
 python-dotenv
 google-generativeai
 gunicorn
-git+https://github.com/jdepoix/youtube-transcript-api.git@master
+youtube-transcript-api==0.6.3
