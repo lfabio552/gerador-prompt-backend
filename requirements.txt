@@ -3,4 +3,4 @@ flask-cors
 python-dotenv
 google-generativeai
 gunicorn
-pytube
+git+https://github.com/pytube/pytube.git
