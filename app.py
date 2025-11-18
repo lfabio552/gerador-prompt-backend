@@ -1,18 +1,20 @@
 import os
-import google.generativeai as genai
 import io
-from docx import Document
-from docx.shared import Cm, Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from flask import send_file
-from flask import Flask, request, jsonify
+import json # Usaremos JSON para a comunicação!
+import google.generativeai as genai
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# --- NOSSAS NOVAS FERRAMENTAS ---
+# --- NOSSAS FERRAMENTAS ---
 from pytube import YouTube
-import xml.etree.ElementTree as ET # Para ler a legenda
-# ---------------------------------
+import xml.etree.ElementTree as ET
+from docx import Document
+from docx.shared import Cm, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
+# ---------------------------
 
 load_dotenv() 
 app = Flask(__name__)
@@ -26,7 +28,7 @@ except Exception as e:
     print(f"Erro ao configurar o modelo Gemini: {e}")
     model = None
 
-# --- ROTAS 1 e 2 (Inalteradas) ---
+# --- ROTA 1: GERADOR DE PROMPTS DE IMAGEM ---
 @app.route('/generate-prompt', methods=['POST'])
 def generate_prompt():
     if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
@@ -36,8 +38,11 @@ def generate_prompt():
         return jsonify({'advanced_prompt': model.generate_content(prompt).text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
+# --- ROTA 2: GERADOR VEO 3 ---
+# --- ESTA É A LINHA CORRIGIDA ---
 @app.route('/generate-veo3-prompt', methods=['POST'])
-def generate_veo3_prompt():
+def generate_veo3_prompt(): 
+# ---------------------------------
     if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
     try:
         data = request.json
@@ -45,51 +50,24 @@ def generate_veo3_prompt():
         return jsonify({'advanced_prompt': model.generate_content(prompt).text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# --- ROTA 3: RESUMIDOR (Versão Pytube) ---
+# --- ROTA 3: RESUMIDOR DE VÍDEOS (Pytube) ---
 @app.route('/summarize-video', methods=['POST'])
 def summarize_video():
     if not model: return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
     data = request.json
     video_url = data.get('url')
     if not video_url: return jsonify({'error': 'Link vazio.'}), 400
-
     try:
-        print(f"Processando com Pytube: {video_url}")
-        
-        # 1. Cria o objeto do YouTube
         yt = YouTube(video_url)
-        
-        # 2. Busca a legenda (caption)
-        # Tenta pegar em PT, depois EN, depois PT-auto, depois EN-auto
         caption = yt.captions.get_by_language_code('pt')
-        if not caption:
-            print("Legenda PT não achada. Tentando EN...")
-            caption = yt.captions.get_by_language_code('en')
-        if not caption:
-             print("Legenda EN não achada. Tentando PT (Auto)...")
-             caption = yt.captions.get_by_language_code('a.pt') # 'a' = Auto-Gerada
-        if not caption:
-             print("Legenda PT-Auto não achada. Tentando EN (Auto)...")
-             caption = yt.captions.get_by_language_code('a.en')
-        
-        if not caption:
-            print("Nenhuma legenda encontrada.")
-            return jsonify({'error': 'Este vídeo não possui legendas em PT ou EN (nem automáticas).'}), 400
-
-        # 3. Baixa e processa a legenda (que vem em XML)
-        print(f"Legenda encontrada: {caption.code}")
+        if not caption: caption = yt.captions.get_by_language_code('en')
+        if not caption: caption = yt.captions.get_by_language_code('a.pt')
+        if not caption: caption = yt.captions.get_by_language_code('a.en')
+        if not caption: return jsonify({'error': 'Este vídeo não possui legendas em PT ou EN.'}), 400
         caption_xml = caption.xml_captions
-        
-        # Lê o XML e junta o texto
         root = ET.fromstring(caption_xml)
         full_text = " ".join([elem.text for elem in root.iter('text') if elem.text])
-        
-        if not full_text:
-             return jsonify({'error': 'Legenda encontrada, mas estava vazia.'}), 400
-
-        print(f"Legenda OK! Tamanho: {len(full_text)}. Enviando ao Gemini...")
-
-        # 4. Envia ao Gemini
+        if not full_text: return jsonify({'error': 'Legenda vazia.'}), 400
         prompt = f"""
         Resuma este vídeo do YouTube em Português do Brasil.
         ## 🎬 Título Criativo
@@ -98,140 +76,156 @@ def summarize_video():
         **🏁 Conclusão:**
         Transcrição: "{full_text[:30000]}" 
         """
-        
         response = model.generate_content(prompt)
         return jsonify({'summary': response.text})
+    except Exception as e: return jsonify({'error': f'Erro no Pytube: {str(e)}'}), 500
 
-    except Exception as e:
-        print(f"ERRO FINAL (Pytube): {e}")
-        error_msg = str(e)
-        if "members only" in error_msg:
-            return jsonify({'error': 'Este vídeo é apenas para membros.'}), 400
-        if "Video unavailable" in error_msg:
-             return jsonify({'error': 'Este vídeo está indisponível ou é privado.'}), 400
-        return jsonify({'error': f'Erro no Pytube: {str(e)}'}), 500
-
-# --- ROTA 4: AGENTE DE FORMATAÇÃO ABNT ---
+# --- ROTA 4: AGENTE ABNT (Formatador de Texto) ---
 @app.route('/format-abnt', methods=['POST'])
 def format_abnt():
-    if not model:
-        return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
-
+    if not model: return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
     try:
         data = request.json
         raw_text = data.get('text')
-
-        if not raw_text:
-            return jsonify({'error': 'O texto não pode estar vazio.'}), 400
-
-        # O prompt "mágico" que ensina a IA a ser um professor de ABNT
+        if not raw_text: return jsonify({'error': 'O texto não pode estar vazio.'}), 400
         prompt = f"""
-        Você é um especialista sênior em formatação de trabalhos acadêmicos pelas normas da ABNT.
-        Sua tarefa é pegar o texto "cru" do usuário e formatá-lo 100% em ABNT, usando Markdown para a estilização.
-
-        Regras de Formatação (Markdown):
-        - **Títulos (Ex: 1. INTRODUÇÃO):** Use `##` (ex: `## 1. INTRODUÇÃO`).
-        - **Subtítulos (Ex: 1.1 Metodologia):** Use `###` (ex: `### 1.1 METODOLOGIA`).
-        - **Citações diretas curtas (até 3 linhas):** Mantenha no corpo do texto, entre aspas duplas, com (AUTOR, ANO, p. XX).
-        - **Citações diretas longas (mais de 3 linhas):** Crie um bloco de citação (>), com recuo, fonte menor (embora markdown não controle fonte), e (AUTOR, ANO, p. XX).
-        - **Citações indiretas:** (Autor, ANO).
-        - **Referências:** No final, crie uma seção `## REFERÊNCIAS` e liste todas as fontes citadas em ordem alfabética, formatadas corretamente (Ex: SOBRENOME, Nome. Título. Cidade: Editora, ANO.)
-        - **Negrito:** Use `**negrito**` apenas onde a ABNT permitir (geralmente títulos).
-
-        Por favor, formate o texto abaixo. Não resuma, apenas formate.
-
-        --- TEXTO CRU DO USUÁRIO ---
-        {raw_text}
-        --- FIM DO TEXTO CRU ---
-
-        O resultado deve ser apenas o texto formatado em Markdown.
+        Formate o texto a seguir para ABNT usando Markdown.
+        Regras: ## 1. TÍTULO, ### 1.1 SUBTÍTULO, > Citação longa, "Citação curta", (Autor, ANO), ## REFERÊNCIAS
+        Texto Cru: {raw_text}
         """
-        
         response = model.generate_content(prompt)
         return jsonify({'formatted_text': response.text})
-
-    except Exception as e:
-        print(f"ERRO ABNT: {e}")
-        return jsonify({'error': f'Erro ao formatar o texto: {str(e)}'}), 500
+    except Exception as e: return jsonify({'error': f'Erro: {str(e)}'}), 500
 
 # --- ROTA 5: GERADOR DE DOCUMENTO .DOCX ABNT ---
 @app.route('/download-docx', methods=['POST'])
 def download_docx():
     try:
         markdown_text = request.json.get('markdown_text')
-        
-        # 1. Criar o documento e definir estilos ABNT
         doc = Document()
-        
-        # Margens ABNT (Superior/Esquerda 3cm, Inferior/Direita 2cm)
         section = doc.sections[0]
-        section.top_margin = Cm(3)
-        section.left_margin = Cm(3)
-        section.bottom_margin = Cm(2)
-        section.right_margin = Cm(2)
-        
-        # Fonte padrão (Arial 12)
-        style = doc.styles['Normal']
-        style.font.name = 'Arial'
-        style.font.size = Pt(12)
-        style.paragraph_format.line_spacing = 1.5 # Espaçamento 1.5
-        style.paragraph_format.space_after = Pt(0) # Sem espaço extra pós-parágrafo
-
-        # 2. Ler o Markdown e "Desenhar" o Word
+        section.top_margin = Cm(3); section.left_margin = Cm(3); section.bottom_margin = Cm(2); section.right_margin = Cm(2)
+        style = doc.styles['Normal']; style.font.name = 'Arial'; style.font.size = Pt(12); style.paragraph_format.line_spacing = 1.5
         lines = markdown_text.split('\n')
-        
         for line in lines:
             if line.startswith('## '):
-                # Título (ex: 1. INTRODUÇÃO)
-                text = line.replace('## ', '').strip()
-                p = doc.add_heading(text, level=2)
-                p.style.font.name = 'Arial'
-                p.style.font.size = Pt(12)
-                p.style.font.bold = True
-            
+                p = doc.add_heading(line.replace('## ', '').strip(), level=2)
             elif line.startswith('### '):
-                # Subtítulo (ex: 1.1 Objetivos)
-                text = line.replace('### ', '').strip()
-                p = doc.add_heading(text, level=3)
-                p.style.font.name = 'Arial'
-                p.style.font.size = Pt(12)
-
+                p = doc.add_heading(line.replace('### ', '').strip(), level=3)
             elif line.startswith('> '):
-                # Citação longa
-                text = line.replace('> ', '').strip()
-                p = doc.add_paragraph(text)
-                # Recuo ABNT de 4cm para citação
-                p.paragraph_format.left_indent = Cm(4)
-                p.paragraph_format.line_spacing = 1.0 # Espaçamento simples
-                p.style.font.size = Pt(10) # Fonte menor
-            
-            elif line.strip() == "":
-                # Linha em branco (pular)
-                continue
-                
-            else:
-                # Parágrafo normal
-                p = doc.add_paragraph(line.strip())
-                # Recuo de primeira linha (parágrafo ABNT)
-                p.paragraph_format.first_line_indent = Cm(1.25)
+                p = doc.add_paragraph(line.replace('> ', '').strip())
+                p.paragraph_format.left_indent = Cm(4); p.paragraph_format.line_spacing = 1.0; p.style.font.size = Pt(10)
+            elif line.strip() != "":
+                p = doc.add_paragraph(line.strip()); p.paragraph_format.first_line_indent = Cm(1.25)
         
-        # 3. Salvar o documento na memória
-        file_stream = io.BytesIO()
-        doc.save(file_stream)
-        file_stream.seek(0) # Volta para o começo do "arquivo"
+        file_stream = io.BytesIO(); doc.save(file_stream); file_stream.seek(0)
+        return send_file(file_stream, as_attachment=True, download_name='trabalho_formatado.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    except Exception as e: return jsonify({'error': str(e)}), 500
 
-        # 4. Enviar o arquivo para o usuário
+# --- ROTA 6: GERADOR DE PLANILHAS (VERSÃO JSON SEGURA) ---
+@app.route('/generate-spreadsheet', methods=['POST'])
+def generate_spreadsheet():
+    if not model:
+        return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
+
+    try:
+        data = request.json
+        description = data.get('description')
+        if not description:
+            return jsonify({'error': 'A descrição não pode estar vazia.'}), 400
+
+        # --- O NOVO PROMPT (PEDINDO JSON) ---
+        prompt = f"""
+        Você é um assistente de design de planilhas.
+        Sua tarefa é converter a descrição de um usuário em um objeto JSON que define uma planilha.
+        Responda APENAS com o objeto JSON, sem ```json ou explicações.
+
+        O JSON deve ter chaves que são as coordenadas da célula (ex: "A1", "B1").
+        O valor de cada chave deve ser um objeto com:
+        - "value": (Obrigatório) O texto da célula.
+        - "style": (Opcional) "header" para cabeçalhos.
+        - "formula": (Opcional) A fórmula do Excel (ex: "=B2-C2").
+        - "width": (Opcional, apenas na linha 1) A largura da coluna.
+
+        Descrição do Usuário:
+        "{description}"
+
+        Exemplo de Resposta (Apenas o JSON):
+        {{
+          "A1": {{ "value": "Data", "style": "header", "width": 15 }},
+          "B1": {{ "value": "Valor Ganho", "style": "header", "width": 20 }},
+          "C1": {{ "value": "Gastos", "style": "header", "width": 20 }},
+          "D1": {{ "value": "Valor Líquido", "style": "header", "width": 20 }},
+          "D2": {{ "formula": "=B2-C2" }},
+          "D3": {{ "formula": "=B3-C3" }},
+          "D4": {{ "formula": "=B4-C4" }},
+          "D5": {{ "formula": "=B5-C5" }},
+          "D6": {{ "formula": "=B6-C6" }},
+          "D7": {{ "formula": "=B7-C7" }},
+          "D8": {{ "formula": "=B8-C8" }},
+          "D9": {{ "formula": "=B9-C9" }},
+          "D10": {{ "formula": "=B10-C10" }},
+          "D11": {{ "formula": "=B11-C11" }},
+          "C12": {{ "value": "Total Líquido:", "style": "header" }},
+          "D12": {{ "formula": "=SUM(D2:D11)", "style": "header" }}
+        }}
+        """
+
+        response = model.generate_content(prompt)
+        json_response = response.text
+
+        if json_response.startswith("```json"):
+            json_response = json_response[7:]
+        if json_response.endswith("```"):
+            json_response = json_response[:-3]
+        json_response = json_response.strip()
+        
+        print("--- JSON (LIMPO) GERADO PELO GEMINI ---")
+        print(json_response)
+        print("---------------------------------------")
+
+        wb = Workbook()
+        ws = wb.active
+        header_fill = PatternFill(start_color='006400', end_color='006400', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True)
+        center_align = Alignment(horizontal='center', vertical='center')
+
+        cell_data = json.loads(json_response)
+        
+        for coord, data in cell_data.items():
+            cell = ws[coord] # Pega a célula (ex: A1)
+            
+            if data.get('value'):
+                cell.value = data['value']
+            
+            if data.get('formula'):
+                cell.value = data['formula'] # O valor da célula é a fórmula
+                
+            if data.get('style') == 'header':
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = center_align
+                
+            if data.get('width'):
+                col_letter = coord[0] 
+                ws.column_dimensions[col_letter].width = data['width']
+
+        file_stream = io.BytesIO()
+        wb.save(file_stream)
+        file_stream.seek(0)
+
         return send_file(
             file_stream,
             as_attachment=True,
-            download_name='trabalho_formatado.docx',
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            download_name='planilha_pronta.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
 
     except Exception as e:
-        print(f"ERRO AO GERAR DOCX: {e}")
-        return jsonify({'error': str(e)}), 500
+        print(f"ERRO AO GERAR PLANILHA: {e}")
+        return jsonify({'error': f'Erro ao gerar planilha: {str(e)}'}), 500
 
+# --- Roda o Servidor ---
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
