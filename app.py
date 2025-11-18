@@ -1,5 +1,10 @@
 import os
 import google.generativeai as genai
+import io
+from docx import Document
+from docx.shared import Cm, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from flask import send_file
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -105,6 +110,127 @@ def summarize_video():
         if "Video unavailable" in error_msg:
              return jsonify({'error': 'Este vídeo está indisponível ou é privado.'}), 400
         return jsonify({'error': f'Erro no Pytube: {str(e)}'}), 500
+
+# --- ROTA 4: AGENTE DE FORMATAÇÃO ABNT ---
+@app.route('/format-abnt', methods=['POST'])
+def format_abnt():
+    if not model:
+        return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
+
+    try:
+        data = request.json
+        raw_text = data.get('text')
+
+        if not raw_text:
+            return jsonify({'error': 'O texto não pode estar vazio.'}), 400
+
+        # O prompt "mágico" que ensina a IA a ser um professor de ABNT
+        prompt = f"""
+        Você é um especialista sênior em formatação de trabalhos acadêmicos pelas normas da ABNT.
+        Sua tarefa é pegar o texto "cru" do usuário e formatá-lo 100% em ABNT, usando Markdown para a estilização.
+
+        Regras de Formatação (Markdown):
+        - **Títulos (Ex: 1. INTRODUÇÃO):** Use `##` (ex: `## 1. INTRODUÇÃO`).
+        - **Subtítulos (Ex: 1.1 Metodologia):** Use `###` (ex: `### 1.1 METODOLOGIA`).
+        - **Citações diretas curtas (até 3 linhas):** Mantenha no corpo do texto, entre aspas duplas, com (AUTOR, ANO, p. XX).
+        - **Citações diretas longas (mais de 3 linhas):** Crie um bloco de citação (>), com recuo, fonte menor (embora markdown não controle fonte), e (AUTOR, ANO, p. XX).
+        - **Citações indiretas:** (Autor, ANO).
+        - **Referências:** No final, crie uma seção `## REFERÊNCIAS` e liste todas as fontes citadas em ordem alfabética, formatadas corretamente (Ex: SOBRENOME, Nome. Título. Cidade: Editora, ANO.)
+        - **Negrito:** Use `**negrito**` apenas onde a ABNT permitir (geralmente títulos).
+
+        Por favor, formate o texto abaixo. Não resuma, apenas formate.
+
+        --- TEXTO CRU DO USUÁRIO ---
+        {raw_text}
+        --- FIM DO TEXTO CRU ---
+
+        O resultado deve ser apenas o texto formatado em Markdown.
+        """
+        
+        response = model.generate_content(prompt)
+        return jsonify({'formatted_text': response.text})
+
+    except Exception as e:
+        print(f"ERRO ABNT: {e}")
+        return jsonify({'error': f'Erro ao formatar o texto: {str(e)}'}), 500
+
+# --- ROTA 5: GERADOR DE DOCUMENTO .DOCX ABNT ---
+@app.route('/download-docx', methods=['POST'])
+def download_docx():
+    try:
+        markdown_text = request.json.get('markdown_text')
+        
+        # 1. Criar o documento e definir estilos ABNT
+        doc = Document()
+        
+        # Margens ABNT (Superior/Esquerda 3cm, Inferior/Direita 2cm)
+        section = doc.sections[0]
+        section.top_margin = Cm(3)
+        section.left_margin = Cm(3)
+        section.bottom_margin = Cm(2)
+        section.right_margin = Cm(2)
+        
+        # Fonte padrão (Arial 12)
+        style = doc.styles['Normal']
+        style.font.name = 'Arial'
+        style.font.size = Pt(12)
+        style.paragraph_format.line_spacing = 1.5 # Espaçamento 1.5
+        style.paragraph_format.space_after = Pt(0) # Sem espaço extra pós-parágrafo
+
+        # 2. Ler o Markdown e "Desenhar" o Word
+        lines = markdown_text.split('\n')
+        
+        for line in lines:
+            if line.startswith('## '):
+                # Título (ex: 1. INTRODUÇÃO)
+                text = line.replace('## ', '').strip()
+                p = doc.add_heading(text, level=2)
+                p.style.font.name = 'Arial'
+                p.style.font.size = Pt(12)
+                p.style.font.bold = True
+            
+            elif line.startswith('### '):
+                # Subtítulo (ex: 1.1 Objetivos)
+                text = line.replace('### ', '').strip()
+                p = doc.add_heading(text, level=3)
+                p.style.font.name = 'Arial'
+                p.style.font.size = Pt(12)
+
+            elif line.startswith('> '):
+                # Citação longa
+                text = line.replace('> ', '').strip()
+                p = doc.add_paragraph(text)
+                # Recuo ABNT de 4cm para citação
+                p.paragraph_format.left_indent = Cm(4)
+                p.paragraph_format.line_spacing = 1.0 # Espaçamento simples
+                p.style.font.size = Pt(10) # Fonte menor
+            
+            elif line.strip() == "":
+                # Linha em branco (pular)
+                continue
+                
+            else:
+                # Parágrafo normal
+                p = doc.add_paragraph(line.strip())
+                # Recuo de primeira linha (parágrafo ABNT)
+                p.paragraph_format.first_line_indent = Cm(1.25)
+        
+        # 3. Salvar o documento na memória
+        file_stream = io.BytesIO()
+        doc.save(file_stream)
+        file_stream.seek(0) # Volta para o começo do "arquivo"
+
+        # 4. Enviar o arquivo para o usuário
+        return send_file(
+            file_stream,
+            as_attachment=True,
+            download_name='trabalho_formatado.docx',
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+
+    except Exception as e:
+        print(f"ERRO AO GERAR DOCX: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
