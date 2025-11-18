@@ -6,3 +6,4 @@ gunicorn
 pytube
 python-docx
 openpyxl
+supabase
