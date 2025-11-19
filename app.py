@@ -169,36 +169,95 @@ def download_docx():
         return send_file(file_stream, as_attachment=True, download_name='trabalho.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# --- ROTA 6: GERADOR DE PLANILHAS ---
+# --- ROTA 6: GERADOR DE PLANILHAS (VERSÃO BLINDADA) ---
 @app.route('/generate-spreadsheet', methods=['POST'])
 def generate_spreadsheet():
-    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
+    if not model:
+        return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
+
     try:
         data = request.json
         user_id = data.get('user_id')
 
+        # 1. Cobrança
         if user_id:
             success, msg = check_and_deduct_credit(user_id)
             if not success: return jsonify({'error': msg}), 402
 
         description = data.get('description')
-        prompt = f"Crie JSON para planilha... Descrição: {description}"
+
+        # 2. Prompt Reforçado
+        prompt = f"""
+        Você é uma API que retorna APENAS JSON.
+        Tarefa: Criar estrutura de planilha baseada em: "{description}"
         
+        Retorne APENAS um objeto JSON válido.
+        NÃO escreva "Aqui está o JSON".
+        NÃO use blocos de código ```json.
+        
+        Formato esperado:
+        {{
+          "A1": {{ "value": "Nome", "style": "header", "width": 20 }},
+          "B1": {{ "value": "Idade", "style": "header", "width": 10 }}
+        }}
+        """
+
         response = model.generate_content(prompt)
-        json_response = response.text.replace("```json", "").replace("```", "").strip()
+        raw_text = response.text
+
+        print(f"--- TEXTO CRU DO GEMINI ---\n{raw_text}\n---------------------------")
+
+        # 3. Limpador Ninja 🥷
+        # Remove crases, palavra json e espaços extras
+        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
         
+        # Tenta encontrar onde começa '{' e termina '}' caso tenha texto em volta
+        start_index = clean_json.find('{')
+        end_index = clean_json.rfind('}') + 1
+        if start_index != -1 and end_index != -1:
+            clean_json = clean_json[start_index:end_index]
+
+        print(f"--- JSON LIMPO ---\n{clean_json}\n------------------")
+
+        cell_data = json.loads(clean_json)
+        
+        # 4. Gerar Excel
         wb = Workbook()
         ws = wb.active
-        cell_data = json.loads(json_response)
-        
-        for coord, data in cell_data.items():
-            ws[coord] = data.get('value')
+        header_fill = PatternFill(start_color='006400', end_color='006400', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True)
+        center_align = Alignment(horizontal='center', vertical='center')
+
+        for coord, cell_info in cell_data.items():
+            cell = ws[coord]
+            
+            if cell_info.get('value'): cell.value = cell_info['value']
+            if cell_info.get('formula'): cell.value = cell_info['formula']
+                
+            if cell_info.get('style') == 'header':
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = center_align
+                
+            if cell_info.get('width'):
+                col_letter = coord[0] 
+                ws.column_dimensions[col_letter].width = cell_info['width']
 
         file_stream = io.BytesIO()
         wb.save(file_stream)
         file_stream.seek(0)
-        return send_file(file_stream, as_attachment=True, download_name='planilha.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    except Exception as e: return jsonify({'error': f'Erro: {str(e)}'}), 500
+
+        return send_file(
+            file_stream,
+            as_attachment=True,
+            download_name='planilha_pronta.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+
+    except Exception as e:
+        print(f"ERRO AO GERAR PLANILHA: {e}")
+        # Devolve o crédito se der erro no JSON (Opcional, mas justo)
+        return jsonify({'error': f'Erro ao processar IA: {str(e)}'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
