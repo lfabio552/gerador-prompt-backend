@@ -37,13 +37,20 @@ except Exception as e:
 # --- FUNÇÃO MÁGICA: VERIFICAR E DESCONTAR CRÉDITOS ---
 def check_and_deduct_credit(user_id):
     try:
+        print(f"--- DEBUG INICIADO ---")
+        print(f"1. ID recebido do Frontend: {user_id}")
+
         # 1. Buscar créditos atuais
         response = supabase.table('profiles').select('credits').eq('id', user_id).execute()
         
+        print(f"2. O que o Supabase devolveu: {response.data}")
+
         if not response.data:
+            print("ERROR: A lista veio vazia! O ID não está na tabela profiles.")
             return False, "Usuário não encontrado."
             
         credits = response.data[0]['credits']
+        print(f"3. Créditos encontrados: {credits}")
         
         if credits <= 0:
             return False, "Você não tem créditos suficientes. Faça um upgrade!"
@@ -52,8 +59,10 @@ def check_and_deduct_credit(user_id):
         new_credits = credits - 1
         supabase.table('profiles').update({'credits': new_credits}).eq('id', user_id).execute()
         
+        print(f"4. Sucesso! Créditos atualizados para: {new_credits}")
         return True, "Sucesso"
     except Exception as e:
+        print(f"ERRO CRÍTICO NO PYTHON: {e}")
         return False, str(e)
 
 # --- ROTA 1: GERADOR DE PROMPTS DE IMAGEM ---
