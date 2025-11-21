@@ -3,7 +3,9 @@ flask-cors
 python-dotenv
 google-generativeai
 gunicorn
+git+https://github.com/jdepoix/youtube-transcript-api.git@master
 pytube
 python-docx
 openpyxl
 supabase
+stripe
