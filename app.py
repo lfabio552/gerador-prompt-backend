@@ -271,7 +271,7 @@ def create_checkout_session():
         print(f"ERRO STRIPE: {e}")
         return jsonify({'error': str(e)}), 500
 
-# --- ROTA 8: WEBHOOK ---
+# --- ROTA 8: O WEBHOOK (O Ouvido do Stripe) ---
 @app.route('/webhook', methods=['POST'])
 def stripe_webhook():
     payload = request.get_data(as_text=True)
@@ -281,19 +281,40 @@ def stripe_webhook():
         event = stripe.Webhook.construct_event(
             payload, sig_header, endpoint_secret
         )
-    except ValueError as e: return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError as e: return 'Invalid signature', 400
+    except ValueError as e:
+        return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError as e:
+        return 'Invalid signature', 400
 
+    # EVENTO 1: Pagamento Aprovado (Vira PRO)
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         user_id = session.get('metadata', {}).get('user_id')
 
         if user_id:
-            print(f"💰 Pagamento recebido para: {user_id}")
+            print(f"💰 Pagamento recebido! Usuário {user_id} virou PRO.")
             supabase.table('profiles').update({
                 'is_pro': True,
                 'stripe_customer_id': session.get('customer')
             }).eq('id', user_id).execute()
+
+    # EVENTO 2: Assinatura Cancelada (Remove PRO)
+    elif event['type'] == 'customer.subscription.deleted':
+        subscription = event['data']['object']
+        stripe_customer_id = subscription.get('customer')
+        
+        if stripe_customer_id:
+            print(f"❌ Assinatura cancelada para cliente Stripe: {stripe_customer_id}")
+            # Procura o usuário pelo ID do cliente Stripe e remove o PRO
+            # Precisamos buscar quem tem esse stripe_customer_id
+            response = supabase.table('profiles').select('id').eq('stripe_customer_id', stripe_customer_id).execute()
+            
+            if response.data:
+                user_id = response.data[0]['id']
+                print(f"⬇️ Removendo status PRO do usuário {user_id}...")
+                supabase.table('profiles').update({
+                    'is_pro': False
+                }).eq('id', user_id).execute()
 
     return 'Success', 200
 
