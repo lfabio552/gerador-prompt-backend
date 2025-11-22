@@ -8,7 +8,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# --- FERRAMENTAS ---
+# --- FERRAMENTAS EXTRAS ---
 from pytube import YouTube
 import xml.etree.ElementTree as ET
 from docx import Document
@@ -16,19 +16,42 @@ from docx.shared import Cm, Pt
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 
+# Carrega variáveis do .env (apenas localmente)
 load_dotenv() 
+
 app = Flask(__name__)
 CORS(app) 
 
-# --- CONFIGURAÇÕES ---
-stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+# --- VERIFICAÇÃO DE CHAVES (DEBUG NO LOG) ---
+print("--- INICIANDO VERIFICAÇÃO DE CHAVES ---")
+stripe_key = os.environ.get("STRIPE_SECRET_KEY")
+if not stripe_key:
+    print("ERRO CRÍTICO: STRIPE_SECRET_KEY não encontrada!")
+else:
+    print(f"STRIPE_SECRET_KEY encontrada: {stripe_key[:5]}...")
+
+stripe_price = os.environ.get("STRIPE_PRICE_ID")
+if not stripe_price:
+    print("ERRO CRÍTICO: STRIPE_PRICE_ID não encontrada!")
+
 frontend_url = os.environ.get("FRONTEND_URL")
-# IMPORTANTE: O Segredo do Webhook (vamos pegar no painel do Stripe depois)
+if not frontend_url:
+    print("ERRO CRÍTICO: FRONTEND_URL não encontrada!")
+
+print("---------------------------------------")
+
+# --- CONFIGURAÇÕES GERAIS ---
+stripe.api_key = stripe_key
 endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
 
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
+
+if url and key:
+    supabase: Client = create_client(url, key)
+else:
+    print("ERRO CRÍTICO: Chaves do Supabase faltando!")
+    supabase = None
 
 try:
     genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
@@ -38,154 +61,235 @@ except Exception as e:
     print(f"Erro ao configurar o modelo Gemini: {e}")
     model = None
 
-# --- FUNÇÃO DE CRÉDITOS ---
+# --- FUNÇÃO DE CONTROLE DE CRÉDITOS ---
 def check_and_deduct_credit(user_id):
     try:
-        response = supabase.table('profiles').select('credits, is_pro').eq('id', user_id).execute()
-        if not response.data: return False, "Usuário não encontrado."
-        user_data = response.data[0]
-        if user_data.get('is_pro'): return True, "Sucesso (VIP)"
-        if user_data['credits'] <= 0: return False, "Sem créditos. Assine o PRO!"
+        if not supabase: return False, "Erro de configuração no Banco de Dados."
         
-        supabase.table('profiles').update({'credits': user_data['credits'] - 1}).eq('id', user_id).execute()
+        response = supabase.table('profiles').select('credits, is_pro').eq('id', user_id).execute()
+        
+        if not response.data: return False, "Usuário não encontrado."
+            
+        user_data = response.data[0]
+        credits = user_data['credits']
+        is_pro = user_data.get('is_pro', False) 
+        
+        if is_pro:
+            print(f"Usuário {user_id} é PRO. Acesso liberado.")
+            return True, "Sucesso (VIP)"
+            
+        if credits <= 0:
+            return False, "Você não tem créditos suficientes. Assine o plano PRO!"
+            
+        new_credits = credits - 1
+        supabase.table('profiles').update({'credits': new_credits}).eq('id', user_id).execute()
+        
         return True, "Sucesso"
-    except Exception as e: return False, str(e)
+    except Exception as e:
+        return False, str(e)
 
-# --- ROTAS DAS FERRAMENTAS (Resumidas para caber aqui, mantenha a lógica!) ---
+# --- ROTA 1: IMAGEM ---
 @app.route('/generate-prompt', methods=['POST'])
 def generate_prompt():
-    # ... (Lógica igual a anterior) ...
-    if not model: return jsonify({'error': 'Erro'}), 500
+    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
     try:
         data = request.json
-        if data.get('user_id'):
-            s, m = check_and_deduct_credit(data.get('user_id'))
-            if not s: return jsonify({'error': m}), 402
-        response = model.generate_content(f"Crie prompt imagem: {data.get('idea')}")
-        return jsonify({'advanced_prompt': response.text})
+        user_id = data.get('user_id')
+        if user_id:
+            success, msg = check_and_deduct_credit(user_id)
+            if not success: return jsonify({'error': msg}), 402
+        
+        prompt = f"Ideia: {data.get('idea')}. Estilo: {data.get('style')}. Crie prompt imagem detalhado em inglês."
+        return jsonify({'advanced_prompt': model.generate_content(prompt).text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
+# --- ROTA 2: VEO 3 ---
 @app.route('/generate-veo3-prompt', methods=['POST'])
 def generate_veo3_prompt():
-    if not model: return jsonify({'error': 'Erro'}), 500
+    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
     try:
         data = request.json
-        if data.get('user_id'):
-            s, m = check_and_deduct_credit(data.get('user_id'))
-            if not s: return jsonify({'error': m}), 402
-        response = model.generate_content(f"Crie prompt video VEO: {data.get('scene')}")
-        return jsonify({'advanced_prompt': response.text})
+        user_id = data.get('user_id')
+        if user_id:
+            success, msg = check_and_deduct_credit(user_id)
+            if not success: return jsonify({'error': msg}), 402
+
+        prompt = f"Crie prompt video Google Veo. Cena: {data.get('scene')}. Em inglês."
+        return jsonify({'advanced_prompt': model.generate_content(prompt).text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
+# --- ROTA 3: RESUMIDOR ---
 @app.route('/summarize-video', methods=['POST'])
 def summarize_video():
-    if not model: return jsonify({'error': 'Erro'}), 500
+    if not model: return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
     data = request.json
-    if data.get('user_id'):
-        s, m = check_and_deduct_credit(data.get('user_id'))
-        if not s: return jsonify({'error': m}), 402
+    video_url = data.get('url')
+    user_id = data.get('user_id')
+    if not video_url: return jsonify({'error': 'Link vazio.'}), 400
+
+    if user_id:
+        success, msg = check_and_deduct_credit(user_id)
+        if not success: return jsonify({'error': msg}), 402
+
     try:
-        yt = YouTube(data.get('url'))
+        yt = YouTube(video_url)
         caption = yt.captions.get_by_language_code('pt')
         if not caption: caption = yt.captions.get_by_language_code('en')
         if not caption: caption = yt.captions.get_by_language_code('a.pt')
         if not caption: caption = yt.captions.get_by_language_code('a.en')
-        if not caption: return jsonify({'error': 'Sem legendas.'}), 400
-        xml = caption.xml_captions
-        root = ET.fromstring(xml)
-        text = " ".join([elem.text for elem in root.iter('text') if elem.text])
-        response = model.generate_content(f"Resuma este video: {text[:30000]}")
-        return jsonify({'summary': response.text})
-    except Exception as e: return jsonify({'error': str(e)}), 500
+        
+        if not caption: return jsonify({'error': 'Este vídeo não possui legendas em PT ou EN.'}), 400
 
+        caption_xml = caption.xml_captions
+        root = ET.fromstring(caption_xml)
+        full_text = " ".join([elem.text for elem in root.iter('text') if elem.text])
+        
+        if not full_text: return jsonify({'error': 'Legenda vazia.'}), 400
+
+        prompt = f"""Resuma este vídeo... Transcrição: "{full_text[:30000]}" """
+        response = model.generate_content(prompt)
+        return jsonify({'summary': response.text})
+    except Exception as e: return jsonify({'error': f'Erro no Pytube: {str(e)}'}), 500
+
+# --- ROTA 4: ABNT ---
 @app.route('/format-abnt', methods=['POST'])
 def format_abnt():
-    if not model: return jsonify({'error': 'Erro'}), 500
+    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
     try:
         data = request.json
-        if data.get('user_id'):
-            s, m = check_and_deduct_credit(data.get('user_id'))
-            if not s: return jsonify({'error': m}), 402
-        response = model.generate_content(f"Formate ABNT: {data.get('text')}")
-        return jsonify({'formatted_text': response.text})
-    except Exception as e: return jsonify({'error': str(e)}), 500
+        user_id = data.get('user_id')
+        if user_id:
+            success, msg = check_and_deduct_credit(user_id)
+            if not success: return jsonify({'error': msg}), 402
 
+        raw_text = data.get('text')
+        prompt = f"Formate o texto a seguir para ABNT usando Markdown... Texto: {raw_text}"
+        response = model.generate_content(prompt)
+        return jsonify({'formatted_text': response.text})
+    except Exception as e: return jsonify({'error': f'Erro: {str(e)}'}), 500
+
+# --- ROTA 5: DOWNLOAD DOCX ---
 @app.route('/download-docx', methods=['POST'])
 def download_docx():
     try:
+        markdown_text = request.json.get('markdown_text')
         doc = Document()
-        doc.add_paragraph(request.json.get('markdown_text'))
-        f = io.BytesIO()
-        doc.save(f)
-        f.seek(0)
-        return send_file(f, as_attachment=True, download_name='doc.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        section = doc.sections[0]
+        section.top_margin = Cm(3); section.left_margin = Cm(3); section.bottom_margin = Cm(2); section.right_margin = Cm(2)
+        style = doc.styles['Normal']; style.font.name = 'Arial'; style.font.size = Pt(12); style.paragraph_format.line_spacing = 1.5
+        
+        lines = markdown_text.split('\n')
+        for line in lines:
+            if line.startswith('## '):
+                p = doc.add_heading(line.replace('## ', '').strip(), level=2)
+            elif line.startswith('### '):
+                p = doc.add_heading(line.replace('### ', '').strip(), level=3)
+            elif line.startswith('> '):
+                p = doc.add_paragraph(line.replace('> ', '').strip())
+                p.paragraph_format.left_indent = Cm(4); p.paragraph_format.line_spacing = 1.0; p.style.font.size = Pt(10)
+            elif line.strip() != "":
+                p = doc.add_paragraph(line.strip()); p.paragraph_format.first_line_indent = Cm(1.25)
+        
+        file_stream = io.BytesIO(); doc.save(file_stream); file_stream.seek(0)
+        return send_file(file_stream, as_attachment=True, download_name='trabalho_formatado.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     except Exception as e: return jsonify({'error': str(e)}), 500
 
+# --- ROTA 6: PLANILHAS ---
 @app.route('/generate-spreadsheet', methods=['POST'])
 def generate_spreadsheet():
-    if not model: return jsonify({'error': 'Erro'}), 500
+    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
     try:
         data = request.json
-        if data.get('user_id'):
-            s, m = check_and_deduct_credit(data.get('user_id'))
-            if not s: return jsonify({'error': m}), 402
-        
-        resp = model.generate_content(f"Gere JSON planilha para: {data.get('description')}. Responda APENAS JSON.")
-        txt = resp.text.replace("```json", "").replace("```", "").strip()
-        if "{" in txt: txt = txt[txt.find("{"):txt.rfind("}")+1]
-        
-        wb = Workbook(); ws = wb.active
-        for k,v in json.loads(txt).items():
-            ws[k] = v.get('value')
-        
-        f = io.BytesIO()
-        wb.save(f)
-        f.seek(0)
-        return send_file(f, as_attachment=True, download_name='sheet.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    except Exception as e: return jsonify({'error': str(e)}), 500
+        user_id = data.get('user_id')
+        if user_id:
+            success, msg = check_and_deduct_credit(user_id)
+            if not success: return jsonify({'error': msg}), 402
 
+        description = data.get('description')
+        prompt = f"""
+        Crie um objeto JSON para uma planilha Excel baseada em: "{description}".
+        Responda APENAS o JSON.
+        Formato: {{ "A1": {{ "value": "Nome", "style": "header", "width": 20 }} }}
+        """
+        response = model.generate_content(prompt)
+        json_response = response.text.replace("```json", "").replace("```", "").strip()
+        
+        if json_response.startswith("{"): pass
+        else:
+             start = json_response.find("{")
+             end = json_response.rfind("}") + 1
+             if start != -1 and end != -1: json_response = json_response[start:end]
+
+        wb = Workbook(); ws = wb.active
+        header_fill = PatternFill(start_color='006400', end_color='006400', fill_type='solid')
+        header_font = Font(color='FFFFFF', bold=True)
+        center_align = Alignment(horizontal='center', vertical='center')
+
+        cell_data = json.loads(json_response)
+        for coord, data in cell_data.items():
+            cell = ws[coord]
+            if data.get('value'): cell.value = data['value']
+            if data.get('formula'): cell.value = data['formula']
+            if data.get('style') == 'header':
+                cell.fill = header_fill; cell.font = header_font; cell.alignment = center_align
+            if data.get('width'):
+                ws.column_dimensions[coord[0]].width = data['width']
+
+        file_stream = io.BytesIO(); wb.save(file_stream); file_stream.seek(0)
+        return send_file(file_stream, as_attachment=True, download_name='planilha.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e: return jsonify({'error': f'Erro: {str(e)}'}), 500
+
+# --- ROTA 7: CHECKOUT DO STRIPE ---
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
     try:
+        # Verifica se a chave carregou
+        if not stripe.api_key:
+            print("ERRO: stripe.api_key está vazia!")
+            return jsonify({'error': 'Erro de configuração no servidor (Stripe Key Missing)'}), 500
+
         data = request.json
+        user_id = data.get('user_id')
+        user_email = data.get('email')
+
+        if not user_id: return jsonify({'error': 'Usuário não identificado.'}), 400
+
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            line_items=[{'price': os.environ.get('STRIPE_PRICE_ID'), 'quantity': 1}],
+            line_items=[{
+                'price': os.environ.get('STRIPE_PRICE_ID'),
+                'quantity': 1,
+            }],
             mode='subscription', 
             success_url=f'{frontend_url}/?success=true',
             cancel_url=f'{frontend_url}/?canceled=true',
-            metadata={'user_id': data.get('user_id')},
-            customer_email=data.get('email')
+            metadata={'user_id': user_id},
+            customer_email=user_email
         )
         return jsonify({'url': checkout_session.url})
-    except Exception as e: return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        print(f"ERRO STRIPE: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# --- ROTA 8: O WEBHOOK (O Ouvido do Stripe) ---
+# --- ROTA 8: WEBHOOK ---
 @app.route('/webhook', methods=['POST'])
 def stripe_webhook():
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
 
     try:
-        # Verifica se o aviso veio mesmo do Stripe
         event = stripe.Webhook.construct_event(
             payload, sig_header, endpoint_secret
         )
-    except ValueError as e:
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError as e:
-        return 'Invalid signature', 400
+    except ValueError as e: return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError as e: return 'Invalid signature', 400
 
-    # Se o pagamento foi completado com sucesso
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
-        
-        # Pega o ID do usuário que guardamos no metadata
         user_id = session.get('metadata', {}).get('user_id')
 
         if user_id:
             print(f"💰 Pagamento recebido para: {user_id}")
-            # Atualiza o usuário para PRO no Supabase
             supabase.table('profiles').update({
                 'is_pro': True,
                 'stripe_customer_id': session.get('customer')
