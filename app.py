@@ -436,6 +436,53 @@ def corporate_translator():
     except Exception as e:
         return jsonify({'error': f'Erro: {str(e)}'}), 500
 
+# --- ROTA 13: SOCIAL MEDIA GENERATOR ---
+@app.route('/generate-social-media', methods=['POST'])
+def generate_social_media():
+    if not model: return jsonify({'error': 'Modelo Gemini não configurado.'}), 500
+
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        
+        # 1. Cobrança de Crédito
+        if user_id:
+            success, msg = check_and_deduct_credit(user_id)
+            if not success: return jsonify({'error': msg}), 402
+
+        text = data.get('text')
+        if not text: return jsonify({'error': 'Texto vazio.'}), 400
+
+        # 2. Prompt para JSON
+        prompt = f"""
+        Você é um estrategista de Social Media.
+        Adapte o texto abaixo para 3 redes sociais diferentes.
+        
+        Texto Original: "{text}"
+        
+        Responda APENAS um JSON (sem ```json) neste formato:
+        {{
+            "instagram": "Legenda engajadora com emojis e hashtags...",
+            "linkedin": "Texto profissional, focado em negócios e lições de carreira...",
+            "twitter": "Thread curta e impactante (max 280 chars)..."
+        }}
+        """
+
+        response = model.generate_content(prompt)
+        
+        # Limpeza do JSON (Ninja)
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        if "{" in json_text:
+            start = json_text.find("{")
+            end = json_text.rfind("}") + 1
+            json_text = json_text[start:end]
+
+        return jsonify(json.loads(json_text))
+
+    except Exception as e:
+        print(f"ERRO SOCIAL: {e}")
+        return jsonify({'error': f'Erro ao gerar posts: {str(e)}'}), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
