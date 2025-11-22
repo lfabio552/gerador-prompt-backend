@@ -297,6 +297,35 @@ def stripe_webhook():
 
     return 'Success', 200
 
+# --- ROTA 9: PORTAL DO CLIENTE (GERENCIAR ASSINATURA) ---
+@app.route('/create-portal-session', methods=['POST'])
+def create_portal_session():
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+
+        if not user_id: return jsonify({'error': 'Usuário não identificado.'}), 400
+
+        # 1. Buscar o ID do Cliente no Stripe (que salvamos no Webhook)
+        response = supabase.table('profiles').select('stripe_customer_id').eq('id', user_id).execute()
+        
+        if not response.data or not response.data[0]['stripe_customer_id']:
+            return jsonify({'error': 'Você ainda não tem uma assinatura ativa para gerenciar.'}), 400
+            
+        customer_id = response.data[0]['stripe_customer_id']
+
+        # 2. Pedir ao Stripe o link do portal
+        portal_session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f'{frontend_url}/', # Para onde ele volta depois de gerenciar
+        )
+
+        return jsonify({'url': portal_session.url})
+
+    except Exception as e:
+        print(f"ERRO PORTAL: {e}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
