@@ -401,6 +401,41 @@ def ask_document():
         print(f"ERRO CHAT PDF: {e}")
         return jsonify({'error': str(e)}), 500
 
+# --- ROTA 12: TRADUTOR CORPORATIVO ---
+@app.route('/corporate-translator', methods=['POST'])
+def corporate_translator():
+    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        
+        # 1. Verifica Crédito
+        if user_id:
+            success, msg = check_and_deduct_credit(user_id)
+            if not success: return jsonify({'error': msg}), 402
+
+        # 2. Prepara o Prompt
+        raw_text = data.get('text')
+        tone = data.get('tone', 'Profissional') # Pode ser 'Diplomático', 'Executivo', etc.
+
+        if not raw_text: return jsonify({'error': 'Texto vazio.'}), 400
+
+        prompt = f"""
+        Você é um especialista em comunicação corporativa e etiqueta empresarial.
+        Sua tarefa é reescrever a mensagem abaixo para que ela fique extremamente {tone}, educada e executiva.
+        Mantenha o sentido original, mas remova qualquer gíria, agressividade ou informalidade.
+        
+        Mensagem Original: "{raw_text}"
+        
+        Responda APENAS com a mensagem reescrita.
+        """
+
+        response = model.generate_content(prompt)
+        return jsonify({'translated_text': response.text})
+
+    except Exception as e:
+        return jsonify({'error': f'Erro: {str(e)}'}), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
