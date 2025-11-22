@@ -8,85 +8,64 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# --- FERRAMENTAS EXTRAS ---
+# --- FERRAMENTAS ---
 from pytube import YouTube
 import xml.etree.ElementTree as ET
 from docx import Document
 from docx.shared import Cm, Pt
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
+from pypdf import PdfReader # Nova ferramenta para ler PDF
 
-# Carrega variáveis do .env (apenas localmente)
 load_dotenv() 
-
 app = Flask(__name__)
 CORS(app) 
 
-# --- VERIFICAÇÃO DE CHAVES (DEBUG NO LOG) ---
-print("--- INICIANDO VERIFICAÇÃO DE CHAVES ---")
-stripe_key = os.environ.get("STRIPE_SECRET_KEY")
-if not stripe_key:
-    print("ERRO CRÍTICO: STRIPE_SECRET_KEY não encontrada!")
-else:
-    print(f"STRIPE_SECRET_KEY encontrada: {stripe_key[:5]}...")
-
-stripe_price = os.environ.get("STRIPE_PRICE_ID")
-if not stripe_price:
-    print("ERRO CRÍTICO: STRIPE_PRICE_ID não encontrada!")
-
+# --- CONFIGURAÇÕES ---
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 frontend_url = os.environ.get("FRONTEND_URL")
-if not frontend_url:
-    print("ERRO CRÍTICO: FRONTEND_URL não encontrada!")
-
-print("---------------------------------------")
-
-# --- CONFIGURAÇÕES GERAIS ---
-stripe.api_key = stripe_key
 endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
 
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
-
-if url and key:
-    supabase: Client = create_client(url, key)
-else:
-    print("ERRO CRÍTICO: Chaves do Supabase faltando!")
-    supabase = None
+supabase: Client = create_client(url, key)
 
 try:
     genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+    # Modelo de texto
     model = genai.GenerativeModel('gemini-2.5-flash')
     print("Modelo Gemini configurado com sucesso!")
 except Exception as e:
     print(f"Erro ao configurar o modelo Gemini: {e}")
     model = None
 
-# --- FUNÇÃO DE CONTROLE DE CRÉDITOS ---
+# --- FUNÇÃO DE CRÉDITOS ---
 def check_and_deduct_credit(user_id):
     try:
-        if not supabase: return False, "Erro de configuração no Banco de Dados."
-        
         response = supabase.table('profiles').select('credits, is_pro').eq('id', user_id).execute()
-        
         if not response.data: return False, "Usuário não encontrado."
-            
         user_data = response.data[0]
-        credits = user_data['credits']
-        is_pro = user_data.get('is_pro', False) 
+        if user_data.get('is_pro'): return True, "Sucesso (VIP)"
+        if user_data['credits'] <= 0: return False, "Você não tem créditos suficientes. Assine o plano PRO!"
         
-        if is_pro:
-            print(f"Usuário {user_id} é PRO. Acesso liberado.")
-            return True, "Sucesso (VIP)"
-            
-        if credits <= 0:
-            return False, "Você não tem créditos suficientes. Assine o plano PRO!"
-            
-        new_credits = credits - 1
-        supabase.table('profiles').update({'credits': new_credits}).eq('id', user_id).execute()
-        
+        supabase.table('profiles').update({'credits': user_data['credits'] - 1}).eq('id', user_id).execute()
         return True, "Sucesso"
+    except Exception as e: return False, str(e)
+
+# --- FUNÇÃO AUXILIAR: GERAR EMBEDDING (Vetor Numérico) ---
+def get_embedding(text):
+    try:
+        # Usa o modelo específico do Google para criar vetores
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=text,
+            task_type="retrieval_document",
+            title="Documento do Usuário"
+        )
+        return result['embedding']
     except Exception as e:
-        return False, str(e)
+        print(f"Erro ao gerar embedding: {e}")
+        return None
 
 # --- ROTA 1: IMAGEM ---
 @app.route('/generate-prompt', methods=['POST'])
@@ -243,108 +222,183 @@ def generate_spreadsheet():
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
     try:
-        # Verifica se a chave carregou
-        if not stripe.api_key:
-            print("ERRO: stripe.api_key está vazia!")
-            return jsonify({'error': 'Erro de configuração no servidor (Stripe Key Missing)'}), 500
-
+        if not stripe.api_key: return jsonify({'error': 'Erro Stripe Key'}), 500
         data = request.json
-        user_id = data.get('user_id')
-        user_email = data.get('email')
-
-        if not user_id: return jsonify({'error': 'Usuário não identificado.'}), 400
-
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            line_items=[{
-                'price': os.environ.get('STRIPE_PRICE_ID'),
-                'quantity': 1,
-            }],
+            line_items=[{'price': os.environ.get('STRIPE_PRICE_ID'), 'quantity': 1}],
             mode='subscription', 
             success_url=f'{frontend_url}/?success=true',
             cancel_url=f'{frontend_url}/?canceled=true',
-            metadata={'user_id': user_id},
-            customer_email=user_email
+            metadata={'user_id': data.get('user_id')},
+            customer_email=data.get('email')
         )
         return jsonify({'url': checkout_session.url})
-    except Exception as e:
-        print(f"ERRO STRIPE: {e}")
-        return jsonify({'error': str(e)}), 500
+    except Exception as e: return jsonify({'error': str(e)}), 500
 
-# --- ROTA 8: O WEBHOOK (O Ouvido do Stripe) ---
+# --- ROTA 8: WEBHOOK ---
 @app.route('/webhook', methods=['POST'])
 def stripe_webhook():
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
-
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
-    except ValueError as e:
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError as e:
-        return 'Invalid signature', 400
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+    except ValueError: return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError: return 'Invalid signature', 400
 
-    # EVENTO 1: Pagamento Aprovado (Vira PRO)
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         user_id = session.get('metadata', {}).get('user_id')
-
         if user_id:
-            print(f"💰 Pagamento recebido! Usuário {user_id} virou PRO.")
-            supabase.table('profiles').update({
-                'is_pro': True,
-                'stripe_customer_id': session.get('customer')
-            }).eq('id', user_id).execute()
-
-    # EVENTO 2: Assinatura Cancelada (Remove PRO)
+            supabase.table('profiles').update({'is_pro': True, 'stripe_customer_id': session.get('customer')}).eq('id', user_id).execute()
+    
     elif event['type'] == 'customer.subscription.deleted':
         subscription = event['data']['object']
         stripe_customer_id = subscription.get('customer')
-        
         if stripe_customer_id:
-            print(f"❌ Assinatura cancelada para cliente Stripe: {stripe_customer_id}")
-            # Procura o usuário pelo ID do cliente Stripe e remove o PRO
-            # Precisamos buscar quem tem esse stripe_customer_id
-            response = supabase.table('profiles').select('id').eq('stripe_customer_id', stripe_customer_id).execute()
-            
-            if response.data:
-                user_id = response.data[0]['id']
-                print(f"⬇️ Removendo status PRO do usuário {user_id}...")
-                supabase.table('profiles').update({
-                    'is_pro': False
-                }).eq('id', user_id).execute()
+            resp = supabase.table('profiles').select('id').eq('stripe_customer_id', stripe_customer_id).execute()
+            if resp.data:
+                user_id = resp.data[0]['id']
+                supabase.table('profiles').update({'is_pro': False}).eq('id', user_id).execute()
 
     return 'Success', 200
 
-# --- ROTA 9: PORTAL DO CLIENTE (GERENCIAR ASSINATURA) ---
+# --- ROTA 9: PORTAL CLIENTE ---
 @app.route('/create-portal-session', methods=['POST'])
 def create_portal_session():
     try:
-        data = request.json
-        user_id = data.get('user_id')
-
-        if not user_id: return jsonify({'error': 'Usuário não identificado.'}), 400
-
-        # 1. Buscar o ID do Cliente no Stripe (que salvamos no Webhook)
-        response = supabase.table('profiles').select('stripe_customer_id').eq('id', user_id).execute()
+        user_id = request.json.get('user_id')
+        resp = supabase.table('profiles').select('stripe_customer_id').eq('id', user_id).execute()
+        if not resp.data or not resp.data[0]['stripe_customer_id']:
+            return jsonify({'error': 'Sem assinatura.'}), 400
         
-        if not response.data or not response.data[0]['stripe_customer_id']:
-            return jsonify({'error': 'Você ainda não tem uma assinatura ativa para gerenciar.'}), 400
-            
-        customer_id = response.data[0]['stripe_customer_id']
-
-        # 2. Pedir ao Stripe o link do portal
         portal_session = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=f'{frontend_url}/', # Para onde ele volta depois de gerenciar
+            customer=resp.data[0]['stripe_customer_id'],
+            return_url=f'{frontend_url}/',
         )
-
         return jsonify({'url': portal_session.url})
+    except Exception as e: return jsonify({'error': str(e)}), 500
+
+# --- ROTA 10: UPLOAD DE PDF (RAG) ---
+@app.route('/upload-document', methods=['POST'])
+def upload_document():
+    try:
+        # 1. Receber arquivo e usuário
+        user_id = request.form.get('user_id')
+        file = request.files.get('file')
+        
+        if not user_id or not file:
+            return jsonify({'error': 'Usuário ou arquivo faltando.'}), 400
+
+        # Verificar crédito (Upload gasta 1 crédito se não for PRO)
+        success, msg = check_and_deduct_credit(user_id)
+        if not success: return jsonify({'error': msg}), 402
+
+        print(f"Processando PDF: {file.filename}")
+
+        # 2. Ler o PDF
+        pdf_reader = PdfReader(file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        
+        if len(text) < 50:
+            return jsonify({'error': 'Não consegui ler texto deste PDF. Ele pode ser uma imagem escaneada.'}), 400
+
+        # 3. Salvar registro do documento no Supabase
+        doc_response = supabase.table('documents').insert({
+            'user_id': user_id,
+            'filename': file.filename
+        }).execute()
+        
+        document_id = doc_response.data[0]['id']
+
+        # 4. Quebrar texto em pedaços (Chunks) e Gerar Embeddings
+        # Vamos quebrar a cada 1000 caracteres aprox.
+        chunk_size = 1000
+        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+        
+        print(f"Gerando embeddings para {len(chunks)} pedaços...")
+        
+        items_to_insert = []
+        for chunk in chunks:
+            embedding = get_embedding(chunk) # Usa o modelo do Google
+            if embedding:
+                items_to_insert.append({
+                    'document_id': document_id,
+                    'content': chunk,
+                    'embedding': embedding
+                })
+        
+        # 5. Salvar pedaços no Supabase
+        # (O Supabase aceita insert em lote, é mais rápido)
+        if items_to_insert:
+            supabase.table('document_chunks').insert(items_to_insert).execute()
+
+        return jsonify({'message': 'Documento processado com sucesso!', 'document_id': document_id})
 
     except Exception as e:
-        print(f"ERRO PORTAL: {e}")
+        print(f"ERRO UPLOAD: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# --- ROTA 11: PERGUNTAR AO DOCUMENTO (RAG) ---
+@app.route('/ask-document', methods=['POST'])
+def ask_document():
+    if not model: return jsonify({'error': 'Modelo Gemini erro.'}), 500
+    try:
+        data = request.json
+        question = data.get('question')
+        document_id = data.get('document_id') # Opcional: focar num doc específico
+        user_id = data.get('user_id')
+
+        if not question or not user_id:
+            return jsonify({'error': 'Pergunta ou usuário faltando.'}), 400
+
+        # 1. Verificar crédito (Perguntar também gasta? Vamos dizer que sim por enquanto)
+        success, msg = check_and_deduct_credit(user_id)
+        if not success: return jsonify({'error': msg}), 402
+
+        # 2. Transformar a pergunta em números (Embedding)
+        query_embedding = get_embedding(question)
+        if not query_embedding:
+            return jsonify({'error': 'Erro ao processar pergunta.'}), 500
+
+        # 3. Buscar trechos parecidos no Supabase (RPC call)
+        # Essa função 'match_documents' nós criamos no SQL lá atrás
+        params = {
+            'query_embedding': query_embedding,
+            'match_threshold': 0.5, # Nível de similaridade (0 a 1)
+            'match_count': 5,       # Pegar os 5 melhores trechos
+            'user_id_filter': user_id
+        }
+        
+        response_rpc = supabase.rpc('match_documents', params).execute()
+        matches = response_rpc.data
+
+        if not matches:
+            return jsonify({'answer': 'Não encontrei informações sobre isso nos seus documentos.'})
+
+        # 4. Montar o contexto para o Gemini
+        context_text = "\n\n".join([item['content'] for item in matches])
+        
+        prompt = f"""
+        Você é um assistente inteligente que responde perguntas baseadas em documentos fornecidos.
+        
+        Use APENAS o contexto abaixo para responder a pergunta do usuário.
+        Se a resposta não estiver no contexto, diga que não sabe.
+        
+        --- CONTEXTO ---
+        {context_text}
+        ----------------
+        
+        Pergunta: {question}
+        """
+
+        response_gemini = model.generate_content(prompt)
+        return jsonify({'answer': response_gemini.text})
+
+    except Exception as e:
+        print(f"ERRO CHAT PDF: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

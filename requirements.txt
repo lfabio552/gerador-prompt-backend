@@ -4,8 +4,9 @@ python-dotenv
 google-generativeai
 gunicorn
 git+https://github.com/jdepoix/youtube-transcript-api.git@master
-pytube
+git+https://github.com/pytube/pytube.git
 python-docx
 openpyxl
 supabase
 stripe
+pypdf
