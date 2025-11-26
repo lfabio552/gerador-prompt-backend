@@ -261,7 +261,7 @@ def corporate_translator():
         return jsonify({'translated_text': resp.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 10. SOCIAL MEDIA GENERATOR (CORRIGIDO)
+# 10. SOCIAL MEDIA GENERATOR (VERSÃO TURBO 2.0)
 @app.route('/generate-social-media', methods=['POST'])
 def generate_social_media():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
@@ -273,17 +273,31 @@ def generate_social_media():
             if not s: return jsonify({'error': m}), 402
 
         text = data.get('text')
+        
+        # Prompt Ninja para Social Media
         prompt = f"""
-        Adapte este texto para Instagram, LinkedIn e Twitter.
-        Texto: "{text}"
-        Responda APENAS JSON:
-        {{ "instagram": "...", "linkedin": "...", "twitter": "..." }}
+        Você é um Gerente de Social Media Expert. Crie 3 posts distintos baseados neste texto: "{text}".
+        
+        1. INSTAGRAM: Use linguagem visual, emojis, hashtags populares, tom engajador e "chamada para ação".
+        2. LINKEDIN: Tom profissional, focado em negócios, lições de carreira ou inovação, sem gírias.
+        3. TWITTER/X: Curto, direto (max 280 chars), impactante, talvez uma opinião forte ou "thread starter".
+
+        SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
+        {{ 
+            "instagram": "texto do post...", 
+            "linkedin": "texto do post...", 
+            "twitter": "texto do post..." 
+        }}
         """
         
-        response = model.generate_content(prompt)
-        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        # Temperatura 0.9 para máxima criatividade
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(temperature=0.9)
+        )
         
-        # Limpeza Extra Garantida
+        # Limpeza do JSON
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text:
             start = json_text.find("{")
             end = json_text.rfind("}") + 1
@@ -294,7 +308,7 @@ def generate_social_media():
         print(f"ERRO SOCIAL: {e}")
         return jsonify({'error': str(e)}), 500
 
-# --- PAGAMENTOS ---
+# --- PAGAMENTOS (STRIPE WEBHOOKS) ---
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
     try:
@@ -329,19 +343,32 @@ def create_portal_session():
 def stripe_webhook():
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
-    try: event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-    except: return 'Error', 400
 
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, endpoint_secret
+        )
+    except ValueError as e:
+        return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError as e:
+        return 'Invalid signature', 400
+
+    # Lógica de atualização do plano
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         uid = session.get('metadata', {}).get('user_id')
-        if uid: supabase.table('profiles').update({'is_pro': True, 'stripe_customer_id': session.get('customer')}).eq('id', uid).execute()
+        if uid:
+            supabase.table('profiles').update({
+                'is_pro': True, 
+                'stripe_customer_id': session.get('customer')
+            }).eq('id', uid).execute()
     
     elif event['type'] == 'customer.subscription.deleted':
         sub = event['data']['object']
         cus_id = sub.get('customer')
         resp = supabase.table('profiles').select('id').eq('stripe_customer_id', cus_id).execute()
-        if resp.data: supabase.table('profiles').update({'is_pro': False}).eq('id', resp.data[0]['id']).execute()
+        if resp.data:
+            supabase.table('profiles').update({'is_pro': False}).eq('id', resp.data[0]['id']).execute()
 
     return 'Success', 200
 
