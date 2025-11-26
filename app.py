@@ -274,7 +274,6 @@ def generate_social_media():
 
         text = data.get('text')
         
-        # Prompt Ninja para Social Media
         prompt = f"""
         Você é um Gerente de Social Media Expert. Crie 3 posts distintos baseados neste texto: "{text}".
         
@@ -290,13 +289,11 @@ def generate_social_media():
         }}
         """
         
-        # Temperatura 0.9 para máxima criatividade
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(temperature=0.9)
         )
         
-        # Limpeza do JSON
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text:
             start = json_text.find("{")
@@ -307,6 +304,56 @@ def generate_social_media():
     except Exception as e:
         print(f"ERRO SOCIAL: {e}")
         return jsonify({'error': str(e)}), 500
+
+# 11. CORRETOR DE REDAÇÃO (NOVO)
+@app.route('/correct-essay', methods=['POST'])
+def correct_essay():
+    if not model: return jsonify({'error': 'Erro modelo'}), 500
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        if user_id:
+            s, m = check_and_deduct_credit(user_id)
+            if not s: return jsonify({'error': m}), 402
+
+        theme = data.get('theme')
+        essay = data.get('essay')
+        
+        prompt = f"""
+        Aja como um Corretor Oficial do ENEM. Avalie a seguinte redação com base no tema: "{theme}".
+        
+        Texto do Aluno:
+        "{essay}"
+
+        Sua tarefa:
+        1. Dê uma nota total de 0 a 1000.
+        2. Avalie as 5 Competências do ENEM (0-200 pontos cada).
+        3. Dê um feedback construtivo geral.
+
+        SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
+        {{
+            "total_score": 000,
+            "competencies": {{
+                "1": "nota - explicação breve",
+                "2": "nota - explicação breve",
+                "3": "nota - explicação breve",
+                "4": "nota - explicação breve",
+                "5": "nota - explicação breve"
+            }},
+            "feedback": "texto do feedback..."
+        }}
+        """
+        
+        response = model.generate_content(prompt)
+        
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        if "{" in json_text:
+            start = json_text.find("{")
+            end = json_text.rfind("}") + 1
+            json_text = json_text[start:end]
+
+        return jsonify(json.loads(json_text))
+    except Exception as e: return jsonify({'error': str(e)}), 500
 
 # --- PAGAMENTOS (STRIPE WEBHOOKS) ---
 @app.route('/create-checkout-session', methods=['POST'])
@@ -353,7 +400,6 @@ def stripe_webhook():
     except stripe.error.SignatureVerificationError as e:
         return 'Invalid signature', 400
 
-    # Lógica de atualização do plano
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         uid = session.get('metadata', {}).get('user_id')
