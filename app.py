@@ -305,7 +305,7 @@ def generate_social_media():
         print(f"ERRO SOCIAL: {e}")
         return jsonify({'error': str(e)}), 500
 
-# 11. CORRETOR DE REDAÇÃO (NOVO)
+# 11. CORRETOR DE REDAÇÃO (ENEM)
 @app.route('/correct-essay', methods=['POST'])
 def correct_essay():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
@@ -321,36 +321,60 @@ def correct_essay():
         
         prompt = f"""
         Aja como um Corretor Oficial do ENEM. Avalie a seguinte redação com base no tema: "{theme}".
+        Texto: "{essay}"
         
-        Texto do Aluno:
-        "{essay}"
-
-        Sua tarefa:
-        1. Dê uma nota total de 0 a 1000.
-        2. Avalie as 5 Competências do ENEM (0-200 pontos cada).
-        3. Dê um feedback construtivo geral.
-
         SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
         {{
             "total_score": 000,
-            "competencies": {{
-                "1": "nota - explicação breve",
-                "2": "nota - explicação breve",
-                "3": "nota - explicação breve",
-                "4": "nota - explicação breve",
-                "5": "nota - explicação breve"
-            }},
-            "feedback": "texto do feedback..."
+            "competencies": {{ "1": "...", "2": "...", "3": "...", "4": "...", "5": "..." }},
+            "feedback": "..."
         }}
         """
         
         response = model.generate_content(prompt)
-        
         json_text = response.text.replace("```json", "").replace("```", "").strip()
-        if "{" in json_text:
-            start = json_text.find("{")
-            end = json_text.rfind("}") + 1
-            json_text = json_text[start:end]
+        if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
+
+        return jsonify(json.loads(json_text))
+    except Exception as e: return jsonify({'error': str(e)}), 500
+
+# 12. SIMULADOR DE ENTREVISTA (NOVO)
+@app.route('/mock-interview', methods=['POST'])
+def mock_interview():
+    if not model: return jsonify({'error': 'Erro modelo'}), 500
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        if user_id:
+            s, m = check_and_deduct_credit(user_id)
+            if not s: return jsonify({'error': m}), 402
+
+        role = data.get('role')
+        description = data.get('description')
+        
+        prompt = f"""
+        Aja como um Recrutador Sênior (Headhunter). Eu vou fazer uma entrevista para a vaga: "{role}".
+        Descrição da vaga: "{description}".
+
+        Gere um guia de preparação em JSON contendo:
+        1. "tough_questions": 5 perguntas difíceis e específicas que você faria.
+        2. "ideal_answers": Para cada pergunta, a resposta ideal (usando método STAR).
+        3. "tips": 3 dicas do que NÃO falar.
+
+        SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
+        {{
+            "questions": [
+                {{ "q": "Pergunta 1...", "a": "Resposta ideal..." }},
+                {{ "q": "Pergunta 2...", "a": "Resposta ideal..." }},
+                ...
+            ],
+            "tips": ["Dica 1", "Dica 2", "Dica 3"]
+        }}
+        """
+        
+        response = model.generate_content(prompt)
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
 
         return jsonify(json.loads(json_text))
     except Exception as e: return jsonify({'error': str(e)}), 500
