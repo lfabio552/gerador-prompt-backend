@@ -338,7 +338,7 @@ def correct_essay():
         return jsonify(json.loads(json_text))
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 12. SIMULADOR DE ENTREVISTA (NOVO)
+# 12. SIMULADOR DE ENTREVISTA
 @app.route('/mock-interview', methods=['POST'])
 def mock_interview():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
@@ -358,7 +358,7 @@ def mock_interview():
 
         Gere um guia de preparação em JSON contendo:
         1. "tough_questions": 5 perguntas difíceis e específicas que você faria.
-        2. "ideal_answers": Para cada pergunta, a resposta ideal (usando método STAR).
+        2. "ideal_answers": Para cada pergunta, a resposta ideal (star method).
         3. "tips": 3 dicas do que NÃO falar.
 
         SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
@@ -371,6 +371,58 @@ def mock_interview():
             "tips": ["Dica 1", "Dica 2", "Dica 3"]
         }}
         """
+        
+        response = model.generate_content(prompt)
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
+
+        return jsonify(json.loads(json_text))
+    except Exception as e: return jsonify({'error': str(e)}), 500
+
+# 13. GERADOR DE QUIZ E FLASHCARDS (NOVO)
+@app.route('/generate-study-material', methods=['POST'])
+def generate_study_material():
+    if not model: return jsonify({'error': 'Erro modelo'}), 500
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        if user_id:
+            s, m = check_and_deduct_credit(user_id)
+            if not s: return jsonify({'error': m}), 402
+
+        text = data.get('text')
+        mode = data.get('mode') # 'quiz' ou 'flashcards'
+        
+        if mode == 'quiz':
+            prompt = f"""
+            Com base no texto abaixo, crie um Quiz de 5 perguntas de múltipla escolha.
+            Texto: "{text[:15000]}"
+
+            SAÍDA APENAS JSON:
+            {{
+                "questions": [
+                    {{
+                        "question": "Pergunta...",
+                        "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
+                        "answer": "Letra correta (ex: A)",
+                        "explanation": "Por que está correta..."
+                    }}
+                ]
+            }}
+            """
+        else: # Flashcards
+            prompt = f"""
+            Com base no texto abaixo, crie 5 Flashcards (Frente e Verso) para memorização.
+            Texto: "{text[:15000]}"
+
+            SAÍDA APENAS JSON:
+            {{
+                "flashcards": [
+                    {{ "front": "Conceito ou Pergunta", "back": "Definição ou Resposta" }},
+                    ...
+                ]
+            }}
+            """
         
         response = model.generate_content(prompt)
         json_text = response.text.replace("```json", "").replace("```", "").strip()
