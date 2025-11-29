@@ -102,7 +102,7 @@ def generate_prompt():
         return jsonify({'advanced_prompt': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 2. VEO 3 & SORA 2 (ATUALIZADO)
+# 2. VEO 3 & SORA 2
 @app.route('/generate-veo3-prompt', methods=['POST'])
 def generate_video_prompt():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
@@ -113,22 +113,20 @@ def generate_video_prompt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        # Pega os dados
-        target_model = data.get('model', 'Veo 3') # Padrão Veo 3 se não vier nada
+        target_model = data.get('model', 'Veo 3')
         scene = data.get('scene')
         style = data.get('style')
         camera = data.get('camera')
         lighting = data.get('lighting')
         audio = data.get('audio')
 
-        # Engenharia de Prompt Diferenciada
         if target_model == 'Sora 2':
             base_instruction = """
             Crie um prompt OTIMIZADO PARA OPENAI SORA 2.
             O Sora 2 exige descrições extremamente detalhadas sobre física, movimento, texturas e continuidade.
             Use linguagem descritiva e natural, focando na ação e no realismo.
             """
-        else: # Veo 3
+        else:
             base_instruction = """
             Crie um prompt OTIMIZADO PARA GOOGLE VEO 3.
             O Veo 3 responde melhor a termos técnicos de cinema, controle de câmera (pan, tilt, zoom) e iluminação precisa.
@@ -463,6 +461,46 @@ def generate_study_material():
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
 
         return jsonify(json.loads(json_text))
+    except Exception as e: return jsonify({'error': str(e)}), 500
+
+# 14. GERADOR DE CARTA DE APRESENTAÇÃO (NOVO)
+@app.route('/generate-cover-letter', methods=['POST'])
+def generate_cover_letter():
+    if not model: return jsonify({'error': 'Erro modelo'}), 500
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        if user_id:
+            s, m = check_and_deduct_credit(user_id)
+            if not s: return jsonify({'error': m}), 402
+
+        cv_text = data.get('cv_text')
+        job_desc = data.get('job_desc')
+        tone = data.get('tone') # 'formal', 'criativo', 'apaixonado'
+        
+        prompt = f"""
+        Aja como um Especialista em Carreira e Recrutamento.
+        Escreva uma Carta de Apresentação (Cover Letter) altamente persuasiva para esta vaga.
+        
+        MEU CURRÍCULO (Resumo):
+        "{cv_text[:10000]}"
+        
+        DESCRIÇÃO DA VAGA:
+        "{job_desc[:10000]}"
+        
+        TOM DE VOZ: {tone}
+        
+        ESTRUTURA OBRIGATÓRIA:
+        1. Saudação profissional.
+        2. Gancho: Por que quero essa vaga específica (mostre entusiasmo).
+        3. Match: Conecte 2 ou 3 experiências minhas diretamente com os requisitos da vaga.
+        4. Fechamento com "Call to Action" (pedindo entrevista).
+        
+        Gere APENAS o texto da carta, pronto para copiar e enviar. Sem explicações extras.
+        """
+        
+        response = model.generate_content(prompt)
+        return jsonify({'cover_letter': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # --- PAGAMENTOS (STRIPE WEBHOOKS) ---
