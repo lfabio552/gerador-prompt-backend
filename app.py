@@ -102,9 +102,9 @@ def generate_prompt():
         return jsonify({'advanced_prompt': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 2. VEO 3
+# 2. VEO 3 & SORA 2 (ATUALIZADO)
 @app.route('/generate-veo3-prompt', methods=['POST'])
-def generate_veo3_prompt():
+def generate_video_prompt():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.json
@@ -113,7 +113,41 @@ def generate_veo3_prompt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        prompt = f"Crie prompt video: {data.get('scene')}"
+        # Pega os dados
+        target_model = data.get('model', 'Veo 3') # Padrão Veo 3 se não vier nada
+        scene = data.get('scene')
+        style = data.get('style')
+        camera = data.get('camera')
+        lighting = data.get('lighting')
+        audio = data.get('audio')
+
+        # Engenharia de Prompt Diferenciada
+        if target_model == 'Sora 2':
+            base_instruction = """
+            Crie um prompt OTIMIZADO PARA OPENAI SORA 2.
+            O Sora 2 exige descrições extremamente detalhadas sobre física, movimento, texturas e continuidade.
+            Use linguagem descritiva e natural, focando na ação e no realismo.
+            """
+        else: # Veo 3
+            base_instruction = """
+            Crie um prompt OTIMIZADO PARA GOOGLE VEO 3.
+            O Veo 3 responde melhor a termos técnicos de cinema, controle de câmera (pan, tilt, zoom) e iluminação precisa.
+            Seja técnico e direto.
+            """
+
+        prompt = f"""
+        {base_instruction}
+        
+        Detalhes da Cena:
+        - Cena: {scene}
+        - Estilo: {style}
+        - Câmera: {camera}
+        - Iluminação: {lighting}
+        - Áudio/Som: {audio}
+
+        Gere APENAS o prompt final em Inglês (pois esses modelos funcionam melhor em inglês).
+        """
+        
         response = model.generate_content(prompt)
         return jsonify({'advanced_prompt': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
@@ -379,7 +413,7 @@ def mock_interview():
         return jsonify(json.loads(json_text))
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 13. GERADOR DE QUIZ E FLASHCARDS (NOVO)
+# 13. GERADOR DE QUIZ E FLASHCARDS
 @app.route('/generate-study-material', methods=['POST'])
 def generate_study_material():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
