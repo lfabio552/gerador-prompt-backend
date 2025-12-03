@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import re
 import google.generativeai as genai
 import stripe
 from flask import Flask, request, jsonify, send_file
@@ -91,7 +92,9 @@ def get_embedding(text):
 def generate_prompt():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+        
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
@@ -107,7 +110,9 @@ def generate_prompt():
 def generate_video_prompt():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
@@ -120,30 +125,20 @@ def generate_video_prompt():
         lighting = data.get('lighting')
         audio = data.get('audio')
 
+        base_instruction = "Crie um prompt OTIMIZADO PARA VÍDEO."
         if target_model == 'Sora 2':
-            base_instruction = """
-            Crie um prompt OTIMIZADO PARA OPENAI SORA 2.
-            O Sora 2 exige descrições extremamente detalhadas sobre física, movimento, texturas e continuidade.
-            Use linguagem descritiva e natural, focando na ação e no realismo.
-            """
+            base_instruction += " Foco em física realista e detalhes visuais (Sora)."
         else:
-            base_instruction = """
-            Crie um prompt OTIMIZADO PARA GOOGLE VEO 3.
-            O Veo 3 responde melhor a termos técnicos de cinema, controle de câmera (pan, tilt, zoom) e iluminação precisa.
-            Seja técnico e direto.
-            """
+            base_instruction += " Foco em termos cinematográficos e técnicos (Veo)."
 
         prompt = f"""
         {base_instruction}
-        
-        Detalhes da Cena:
-        - Cena: {scene}
-        - Estilo: {style}
-        - Câmera: {camera}
-        - Iluminação: {lighting}
-        - Áudio/Som: {audio}
-
-        Gere APENAS o prompt final em Inglês (pois esses modelos funcionam melhor em inglês).
+        Cena: {scene}
+        Estilo: {style}
+        Câmera: {camera}
+        Luz: {lighting}
+        Som: {audio}
+        Gere APENAS o prompt final em Inglês.
         """
         
         response = model.generate_content(prompt)
@@ -154,16 +149,18 @@ def generate_video_prompt():
 @app.route('/summarize-video', methods=['POST'])
 def summarize_video():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
-    data = request.json
-    if data.get('user_id'):
-        s, m = check_and_deduct_credit(data.get('user_id'))
-        if not s: return jsonify({'error': m}), 402
-
     try:
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
+        if data.get('user_id'):
+            s, m = check_and_deduct_credit(data.get('user_id'))
+            if not s: return jsonify({'error': m}), 402
+
         yt = YouTube(data.get('url'))
         caption = yt.captions.get_by_language_code('pt')
         if not caption: caption = yt.captions.get_by_language_code('en')
-        if not caption: caption = yt.captions.get_by_language_code('a.pt') # Auto
+        if not caption: caption = yt.captions.get_by_language_code('a.pt') 
         
         if not caption: return jsonify({'error': 'Sem legendas.'}), 400
         
@@ -181,7 +178,9 @@ def summarize_video():
 def format_abnt():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
@@ -196,37 +195,103 @@ def format_abnt():
 @app.route('/download-docx', methods=['POST'])
 def download_docx():
     try:
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         doc = Document()
-        doc.add_paragraph(request.json.get('markdown_text'))
+        doc.add_paragraph(data.get('markdown_text'))
         f = io.BytesIO()
         doc.save(f)
         f.seek(0)
         return send_file(f, as_attachment=True, download_name='doc.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 6. PLANILHAS
+# 6. PLANILHAS (VERSÃO FLEXÍVEL E GARANTIDA)
 @app.route('/generate-spreadsheet', methods=['POST'])
 def generate_spreadsheet():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        prompt = f"Gere JSON planilha: {data.get('description')}. APENAS JSON."
-        resp = model.generate_content(prompt)
-        txt = resp.text.replace("```json", "").replace("```", "").strip()
-        if "{" in txt: txt = txt[txt.find("{"):txt.rfind("}")+1]
+        # Prompt OTIMIZADO para sempre retornar algo útil
+        prompt = f"""
+        Você é um especialista em Excel. Crie o conteúdo de uma planilha para:
+        "{data.get('description')}"
+
+        IMPORTANTE: Responda EXATAMENTE neste formato de lista (Célula|Valor):
         
-        wb = Workbook(); ws = wb.active
-        for k,v in json.loads(txt).items():
-            ws[k] = v.get('value')
+        A1|TÍTULO DA PLANILHA
+        A3|Data
+        B3|Descrição
+        C3|Valor
+        A4|01/01/2024
+        B4|Exemplo de Item
+        C4|100.00
         
-        f = io.BytesIO(); wb.save(f); f.seek(0)
-        return send_file(f, as_attachment=True, download_name='sheet.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    except Exception as e: return jsonify({'error': str(e)}), 500
+        Gere pelo menos 5 linhas de dados de exemplo para a planilha não ficar vazia.
+        Use títulos em CAIXA ALTA.
+        """
+        
+        response = model.generate_content(prompt)
+        
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Planilha Gerada"
+        
+        lines = response.text.strip().split('\n')
+        data_found = False # Flag para saber se achamos dados
+        
+        for line in lines:
+            if '|' in line:
+                parts = line.split('|')
+                if len(parts) >= 2:
+                    cell = parts[0].strip()
+                    value = "|".join(parts[1:]).strip()
+                    
+                    # Verifica se a célula é válida (Ex: A1, B2)
+                    if re.match(r'^[A-Z]{1,3}[0-9]{1,6}$', cell):
+                        data_found = True
+                        try:
+                            # Tenta converter números
+                            if value.replace('.', '', 1).isdigit():
+                                value = float(value)
+                        except: pass
+                        
+                        try:
+                            ws[cell] = value
+                            if isinstance(value, str) and value.isupper() and len(value) > 2:
+                                ws[cell].font = Font(bold=True)
+                                ws[cell].fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+                        except: pass
+
+        # SE A IA FALHOU E A PLANILHA ESTÁ VAZIA, CRIAMOS UMA DE EMERGÊNCIA
+        if not data_found:
+            ws['A1'] = "ERRO NA GERAÇÃO AUTOMÁTICA"
+            ws['A2'] = "A IA não retornou dados no formato correto."
+            ws['A3'] = "Descrição do seu pedido:"
+            ws['B3'] = data.get('description')
+            ws.column_dimensions['A'].width = 30
+            ws.column_dimensions['B'].width = 50
+
+        # Ajuste largura
+        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['B'].width = 30
+        ws.column_dimensions['C'].width = 15
+
+        f = io.BytesIO()
+        wb.save(f)
+        f.seek(0)
+        
+        return send_file(f, as_attachment=True, download_name='planilha_ia.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        print(f"ERRO PLANILHA: {e}")
+        return jsonify({'error': f"Erro ao gerar: {str(e)}"}), 500
 
 # 7. UPLOAD PDF (RAG)
 @app.route('/upload-document', methods=['POST'])
@@ -261,11 +326,12 @@ def upload_document():
 def ask_document():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         question = data.get('question')
         
-        # Busca vetorial
         q_emb = get_embedding(question)
         params = {'query_embedding': q_emb, 'match_threshold': 0.5, 'match_count': 5, 'user_id_filter': user_id}
         matches = supabase.rpc('match_documents', params).execute().data
@@ -282,7 +348,9 @@ def ask_document():
 def corporate_translator():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
@@ -293,80 +361,52 @@ def corporate_translator():
         return jsonify({'translated_text': resp.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 10. SOCIAL MEDIA GENERATOR (VERSÃO TURBO 2.0)
+# 10. SOCIAL MEDIA GENERATOR
 @app.route('/generate-social-media', methods=['POST'])
 def generate_social_media():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
         text = data.get('text')
-        
         prompt = f"""
-        Você é um Gerente de Social Media Expert. Crie 3 posts distintos baseados neste texto: "{text}".
-        
-        1. INSTAGRAM: Use linguagem visual, emojis, hashtags populares, tom engajador e "chamada para ação".
-        2. LINKEDIN: Tom profissional, focado em negócios, lições de carreira ou inovação, sem gírias.
-        3. TWITTER/X: Curto, direto (max 280 chars), impactante, talvez uma opinião forte ou "thread starter".
-
-        SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
-        {{ 
-            "instagram": "texto do post...", 
-            "linkedin": "texto do post...", 
-            "twitter": "texto do post..." 
-        }}
+        Crie 3 posts (Instagram, LinkedIn, Twitter) sobre: "{text}".
+        SAÍDA JSON OBRIGATÓRIA: {{ "instagram": "...", "linkedin": "...", "twitter": "..." }}
         """
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.9)
-        )
+        response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0.9))
         
         json_text = response.text.replace("```json", "").replace("```", "").strip()
-        if "{" in json_text:
-            start = json_text.find("{")
-            end = json_text.rfind("}") + 1
-            json_text = json_text[start:end]
-
+        if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
         return jsonify(json.loads(json_text))
     except Exception as e:
-        print(f"ERRO SOCIAL: {e}")
         return jsonify({'error': str(e)}), 500
 
-# 11. CORRETOR DE REDAÇÃO (ENEM)
+# 11. CORRETOR DE REDAÇÃO
 @app.route('/correct-essay', methods=['POST'])
 def correct_essay():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        theme = data.get('theme')
-        essay = data.get('essay')
-        
         prompt = f"""
-        Aja como um Corretor Oficial do ENEM. Avalie a seguinte redação com base no tema: "{theme}".
-        Texto: "{essay}"
-        
-        SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
-        {{
-            "total_score": 000,
-            "competencies": {{ "1": "...", "2": "...", "3": "...", "4": "...", "5": "..." }},
-            "feedback": "..."
-        }}
+        Corrija a redação sobre "{data.get('theme')}". Texto: "{data.get('essay')}"
+        SAÍDA JSON: {{ "total_score": 0, "competencies": {{...}}, "feedback": "..." }}
         """
-        
         response = model.generate_content(prompt)
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-
         return jsonify(json.loads(json_text))
     except Exception as e: return jsonify({'error': str(e)}), 500
 
@@ -375,39 +415,21 @@ def correct_essay():
 def mock_interview():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        role = data.get('role')
-        description = data.get('description')
-        
         prompt = f"""
-        Aja como um Recrutador Sênior (Headhunter). Eu vou fazer uma entrevista para a vaga: "{role}".
-        Descrição da vaga: "{description}".
-
-        Gere um guia de preparação em JSON contendo:
-        1. "tough_questions": 5 perguntas difíceis e específicas que você faria.
-        2. "ideal_answers": Para cada pergunta, a resposta ideal (star method).
-        3. "tips": 3 dicas do que NÃO falar.
-
-        SAÍDA OBRIGATÓRIA EM JSON (SEM MARKDOWN):
-        {{
-            "questions": [
-                {{ "q": "Pergunta 1...", "a": "Resposta ideal..." }},
-                {{ "q": "Pergunta 2...", "a": "Resposta ideal..." }},
-                ...
-            ],
-            "tips": ["Dica 1", "Dica 2", "Dica 3"]
-        }}
+        Simule entrevista para "{data.get('role')}". Descrição: "{data.get('description')}".
+        SAÍDA JSON: {{ "questions": [{{ "q": "...", "a": "..." }}], "tips": ["..."] }}
         """
-        
         response = model.generate_content(prompt)
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-
         return jsonify(json.loads(json_text))
     except Exception as e: return jsonify({'error': str(e)}), 500
 
@@ -416,89 +438,48 @@ def mock_interview():
 def generate_study_material():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        text = data.get('text')
-        mode = data.get('mode') # 'quiz' ou 'flashcards'
-        
+        mode = data.get('mode')
         if mode == 'quiz':
             prompt = f"""
-            Com base no texto abaixo, crie um Quiz de 5 perguntas de múltipla escolha.
-            Texto: "{text[:15000]}"
-
-            SAÍDA APENAS JSON:
-            {{
-                "questions": [
-                    {{
-                        "question": "Pergunta...",
-                        "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
-                        "answer": "Letra correta (ex: A)",
-                        "explanation": "Por que está correta..."
-                    }}
-                ]
-            }}
+            Gere um Quiz sobre: "{data.get('text')[:15000]}".
+            SAÍDA JSON: {{ "questions": [{{ "question": "...", "options": ["..."], "answer": "...", "explanation": "..." }}] }}
             """
-        else: # Flashcards
+        else:
             prompt = f"""
-            Com base no texto abaixo, crie 5 Flashcards (Frente e Verso) para memorização.
-            Texto: "{text[:15000]}"
-
-            SAÍDA APENAS JSON:
-            {{
-                "flashcards": [
-                    {{ "front": "Conceito ou Pergunta", "back": "Definição ou Resposta" }},
-                    ...
-                ]
-            }}
+            Gere Flashcards sobre: "{data.get('text')[:15000]}".
+            SAÍDA JSON: {{ "flashcards": [{{ "front": "...", "back": "..." }}] }}
             """
         
         response = model.generate_content(prompt)
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-
         return jsonify(json.loads(json_text))
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 14. GERADOR DE CARTA DE APRESENTAÇÃO (NOVO)
+# 14. CARTA DE APRESENTAÇÃO
 @app.route('/generate-cover-letter', methods=['POST'])
 def generate_cover_letter():
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
+
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        cv_text = data.get('cv_text')
-        job_desc = data.get('job_desc')
-        tone = data.get('tone') # 'formal', 'criativo', 'apaixonado'
-        
         prompt = f"""
-        Aja como um Especialista em Carreira e Recrutamento.
-        Escreva uma Carta de Apresentação (Cover Letter) altamente persuasiva para esta vaga.
-        
-        MEU CURRÍCULO (Resumo):
-        "{cv_text[:10000]}"
-        
-        DESCRIÇÃO DA VAGA:
-        "{job_desc[:10000]}"
-        
-        TOM DE VOZ: {tone}
-        
-        ESTRUTURA OBRIGATÓRIA:
-        1. Saudação profissional.
-        2. Gancho: Por que quero essa vaga específica (mostre entusiasmo).
-        3. Match: Conecte 2 ou 3 experiências minhas diretamente com os requisitos da vaga.
-        4. Fechamento com "Call to Action" (pedindo entrevista).
-        
-        Gere APENAS o texto da carta, pronto para copiar e enviar. Sem explicações extras.
+        Escreva uma Cover Letter para a vaga: "{data.get('job_desc')}" baseada no CV: "{data.get('cv_text')}". Tom: {data.get('tone')}.
         """
-        
         response = model.generate_content(prompt)
         return jsonify({'cover_letter': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
@@ -507,7 +488,8 @@ def generate_cover_letter():
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
     try:
-        data = request.json
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{'price': os.environ.get('STRIPE_PRICE_ID'), 'quantity': 1}],
@@ -538,32 +520,17 @@ def create_portal_session():
 def stripe_webhook():
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
-
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
-    except ValueError as e:
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError as e:
-        return 'Invalid signature', 400
-
+    try: event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+    except: return 'Error', 400
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         uid = session.get('metadata', {}).get('user_id')
-        if uid:
-            supabase.table('profiles').update({
-                'is_pro': True, 
-                'stripe_customer_id': session.get('customer')
-            }).eq('id', uid).execute()
-    
+        if uid: supabase.table('profiles').update({'is_pro': True, 'stripe_customer_id': session.get('customer')}).eq('id', uid).execute()
     elif event['type'] == 'customer.subscription.deleted':
         sub = event['data']['object']
         cus_id = sub.get('customer')
         resp = supabase.table('profiles').select('id').eq('stripe_customer_id', cus_id).execute()
-        if resp.data:
-            supabase.table('profiles').update({'is_pro': False}).eq('id', resp.data[0]['id']).execute()
-
+        if resp.data: supabase.table('profiles').update({'is_pro': False}).eq('id', resp.data[0]['id']).execute()
     return 'Success', 200
 
 if __name__ == '__main__':
