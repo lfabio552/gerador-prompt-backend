@@ -191,6 +191,47 @@ def format_abnt():
         return jsonify({'formatted_text': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
+# 4.1. RESUMIDOR DE TEXTOS LONGOS (Substitui o VideoSummarizer problemático)
+@app.route('/summarize-text', methods=['POST'])
+def summarize_text():
+    if not model:
+        return jsonify({'error': 'Modelo Gemini não disponível'}), 500
+    
+    try:
+        data = request.get_json(force=True)
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        user_id = data.get('user_id')
+        if user_id:
+            success, message = check_and_deduct_credit(user_id)
+            if not success:
+                return jsonify({'error': message}), 402
+
+        text = data.get('text', '')
+        if len(text) < 50:
+            return jsonify({'error': 'Texto muito curto. Mínimo 50 caracteres.'}), 400
+        
+        # Limitar tamanho para não exceder tokens do Gemini
+        text_limitado = text[:15000]  # 15k caracteres é seguro
+        
+        prompt = f"""
+        Resuma o seguinte texto de forma clara e concisa.
+        Mantenha os pontos principais e informações essenciais.
+        Tamanho do resumo: Aproximadamente 20% do original.
+        
+        TEXTO PARA RESUMIR:
+        {text_limitado}
+        
+        RESPOSTA: Apenas o resumo, sem introduções.
+        """
+        
+        response = model.generate_content(prompt)
+        return jsonify({'summary': response.text})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # 5. DOWNLOAD DOCX
 @app.route('/download-docx', methods=['POST'])
 def download_docx():
