@@ -593,6 +593,117 @@ def generate_image():
     except Exception as e:
         return jsonify({'error': f'Erro interno: {str(e)}'}), 500
 
+# ============================================
+# HISTÓRICO DE ATIVIDADES - NOVAS ROTAS
+# ============================================
+
+# 19. SALVAR ATIVIDADE NO HISTÓRICO
+@app.route('/save-history', methods=['POST'])
+def save_history():
+    try:
+        data = request.get_json(force=True)
+        if isinstance(data, str):
+            data = json.loads(data)
+        
+        # Campos obrigatórios
+        required_fields = ['user_id', 'tool_type', 'tool_name', 'input_data']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'error': f'Campo obrigatório faltando: {field}'}), 400
+        
+        # Preparar dados para inserção
+        history_data = {
+            'user_id': data['user_id'],
+            'tool_type': data['tool_type'],
+            'tool_name': data['tool_name'],
+            'input_data': data['input_data'][:1000],  # Limitar tamanho
+            'output_data': data.get('output_data', '')[:2000],
+            'metadata': data.get('metadata', {})
+        }
+        
+        # Inserir no banco
+        result = supabase.table('user_history').insert(history_data).execute()
+        
+        return jsonify({
+            'success': True, 
+            'history_id': result.data[0]['id'],
+            'message': 'Atividade salva no histórico'
+        })
+        
+    except Exception as e:
+        print(f"❌ Erro ao salvar histórico: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# 20. BUSCAR HISTÓRICO DO USUÁRIO
+@app.route('/get-history', methods=['POST'])
+def get_history():
+    try:
+        data = request.get_json(force=True)
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({'error': 'user_id obrigatório'}), 400
+        
+        # Query com filtros opcionais
+        query = supabase.table('user_history')\
+            .select('*')\
+            .eq('user_id', user_id)
+        
+        # Filtrar por tipo de ferramenta (opcional)
+        if data.get('tool_type'):
+            query = query.eq('tool_type', data['tool_type'])
+        
+        # Filtrar por data (opcional)
+        if data.get('start_date'):
+            query = query.gte('created_at', data['start_date'])
+        if data.get('end_date'):
+            query = query.lte('created_at', data['end_date'])
+        
+        # Ordenar e limitar
+        response = query.order('created_at', desc=True)\
+                       .limit(data.get('limit', 100))\
+                       .execute()
+        
+        return jsonify({
+            'success': True,
+            'count': len(response.data),
+            'history': response.data
+        })
+        
+    except Exception as e:
+        print(f"❌ Erro ao buscar histórico: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# 21. DELETAR ITEM DO HISTÓRICO
+@app.route('/delete-history-item', methods=['POST'])
+def delete_history_item():
+    try:
+        data = request.get_json(force=True)
+        user_id = data.get('user_id')
+        item_id = data.get('item_id')
+        
+        if not user_id or not item_id:
+            return jsonify({'error': 'user_id e item_id obrigatórios'}), 400
+        
+        # Verificar se o item pertence ao usuário (segurança extra)
+        check = supabase.table('user_history')\
+            .select('id')\
+            .eq('id', item_id)\
+            .eq('user_id', user_id)\
+            .execute()
+        
+        if not check.data:
+            return jsonify({'error': 'Item não encontrado ou não autorizado'}), 404
+        
+        # Deletar o item
+        supabase.table('user_history').delete().eq('id', item_id).execute()
+        
+        return jsonify({'success': True, 'message': 'Item deletado'})
+        
+    except Exception as e:
+        print(f"❌ Erro ao deletar histórico: {e}")
+        return jsonify({'error': str(e)}), 500
+
 # --- PAGAMENTOS (STRIPE WEBHOOKS) ---
 @app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
