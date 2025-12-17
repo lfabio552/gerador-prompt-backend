@@ -4,6 +4,7 @@ import json
 import re
 import google.generativeai as genai
 import stripe
+import replicate
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -524,6 +525,73 @@ def generate_cover_letter():
         response = model.generate_content(prompt)
         return jsonify({'cover_letter': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
+
+# 15. GERADOR DE IMAGENS (Stable Diffusion via Replicate)
+import replicate  # ADICIONE ESTE IMPORT NO TOPO DO ARQUIVO
+
+@app.route('/generate-image', methods=['POST'])
+def generate_image():
+    try:
+        data = request.get_json(force=True)
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        # 1. Verificar usuário e créditos
+        user_id = data.get('user_id')
+        if user_id:
+            success, message = check_and_deduct_credit(user_id)
+            if not success:
+                return jsonify({'error': message}), 402
+
+        prompt = data.get('prompt', '')
+        if not prompt or len(prompt) < 10:
+            return jsonify({'error': 'Prompt muito curto (mínimo 10 caracteres).'}), 400
+
+        # 2. Configurar modelo (SDXL é o melhor custo-benefício)
+        model = "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b"
+        
+        # 3. Chamar Replicate API
+        output = replicate.run(
+            model,
+            input={
+                "prompt": prompt,
+                "num_outputs": 1,
+                "num_inference_steps": 30,  # Balance entre qualidade/velocidade
+                "guidance_scale": 7.5,
+                "width": 1024,
+                "height": 1024,
+                "scheduler": "DPMSolverMultistep",
+                "negative_prompt": "blurry, low quality, distorted, ugly, deformed"
+            }
+        )
+
+        # 4. Retornar URL da imagem
+        image_url = output[0] if isinstance(output, list) else output
+        
+        # 5. (OPCIONAL) Salvar no banco para histórico
+        if supabase and user_id:
+            try:
+                supabase.table('image_history').insert({
+                    'user_id': user_id,
+                    'prompt': prompt[:500],  # Limitar tamanho
+                    'image_url': image_url,
+                    'created_at': 'now()'
+                }).execute()
+            except Exception as e:
+                print(f"Erro ao salvar histórico: {e}")
+
+        return jsonify({
+            'success': True,
+            'image_url': image_url,
+            'prompt': prompt
+        })
+
+    except replicate.exceptions.ModelError as e:
+        return jsonify({'error': f'Erro no modelo: {str(e)}'}), 500
+    except replicate.exceptions.ReplicateError as e:
+        return jsonify({'error': f'Erro na API: {str(e)}'}), 500
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
 
 # --- PAGAMENTOS (STRIPE WEBHOOKS) ---
 @app.route('/create-checkout-session', methods=['POST'])

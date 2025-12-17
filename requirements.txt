@@ -10,3 +10,4 @@ openpyxl
 supabase
 stripe
 pypdf
+replicate==0.25.1
