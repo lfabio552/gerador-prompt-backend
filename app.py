@@ -86,6 +86,14 @@ def get_embedding(text):
         print(f"Erro embedding: {e}")
         return None
 
+@app.route('/')
+def health_check():
+    return jsonify({'status': 'ok', 'service': 'Adapta IA Backend'})
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'}), 200
+
 # --- ROTAS DAS FERRAMENTAS ---
 
 # 1. IMAGEM
