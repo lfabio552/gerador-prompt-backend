@@ -610,6 +610,7 @@ def generate_image():
 def save_history():
     try:
         data = request.get_json(force=True)
+	print("📥 Dados recebidos:", data)
         if isinstance(data, str):
             data = json.loads(data)
         
@@ -617,6 +618,7 @@ def save_history():
         required_fields = ['user_id', 'tool_type', 'tool_name', 'input_data']
         for field in required_fields:
             if not data.get(field):
+	print(f"❌ Campo faltando: {field}")
                 return jsonify({'error': f'Campo obrigatório faltando: {field}'}), 400
         
         # Preparar dados para inserção
