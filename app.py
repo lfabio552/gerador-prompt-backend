@@ -25,6 +25,10 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app) 
 
+# --- CORREÇÃO DO ERRO DE CORS AQUI ---
+# Isso libera o acesso para qualquer site (Vercel, Localhost, etc) consumir sua API
+CORS(app, resources={r"/*": {"origins": "*"}})
+
 # --- VERIFICAÇÃO DE CHAVES ---
 stripe_key = os.environ.get("STRIPE_SECRET_KEY")
 stripe_price = os.environ.get("STRIPE_PRICE_ID")
