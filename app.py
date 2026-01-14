@@ -25,10 +25,18 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app) 
 
-# --- CORREÇÃO DO ERRO DE CORS AQUI ---
-# Isso libera o acesso para qualquer site (Vercel, Localhost, etc) consumir sua API
+# 1. Configuração do Flask-CORS (Mantenha isso)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+# 2. SOLUÇÃO FORÇA BRUTA: Injeção Manual de Headers
+# Isso garante que TODA resposta leve os headers de permissão
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+    
 # --- VERIFICAÇÃO DE CHAVES ---
 stripe_key = os.environ.get("STRIPE_SECRET_KEY")
 stripe_price = os.environ.get("STRIPE_PRICE_ID")
