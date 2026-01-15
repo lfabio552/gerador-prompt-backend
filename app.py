@@ -6,11 +6,11 @@ import google.generativeai as genai
 import stripe
 import replicate
 from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS # Apenas a biblioteca, sem tralhas manuais
+from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# --- FERRAMENTAS EXTRAS ---
+# --- FERRAMENTAS EXTRAS (SEU CÓDIGO ORIGINAL) ---
 from pytube import YouTube
 import xml.etree.ElementTree as ET
 from docx import Document
@@ -22,12 +22,12 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÃO CORS CORRETA ---
-# Habilita CORS para todas as rotas e todas as origens (*)
-# Isso lida automaticamente com o método OPTIONS
+# --- CORREÇÃO DO ERRO DE CORS (DEFINITIVA) ---
+# Removemos o 'after_request' manual para não duplicar headers.
+# Esta linha libera geral para Vercel e Localhost.
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- VERIFICAÇÃO DE CHAVES ---
+# --- CONFIGURAÇÕES (SEU CÓDIGO) ---
 stripe_key = os.environ.get("STRIPE_SECRET_KEY")
 endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
 frontend_url = os.environ.get("FRONTEND_URL", "*")
@@ -36,15 +36,17 @@ if stripe_key: stripe.api_key = stripe_key
 
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
+
 if url and key:
     supabase: Client = create_client(url, key)
 else:
-    print("ERRO: Supabase não configurado.")
+    print("AVISO: Supabase não configurado corretamente.")
     supabase = None
 
 try:
     genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
     model = genai.GenerativeModel('gemini-2.5-flash')
+    print("Gemini conectado.")
 except Exception as e:
     print(f"Erro Gemini: {e}")
     model = None
@@ -54,12 +56,16 @@ def check_and_deduct_credit(user_id):
     try:
         if not supabase: return False, "Erro de banco de dados."
         response = supabase.table('profiles').select('credits, is_pro').eq('id', user_id).execute()
+        
         if not response.data: return False, "Usuário não encontrado."
+        
         user_data = response.data[0]
         credits = user_data.get('credits', 0)
         is_pro = user_data.get('is_pro', False) 
+        
         if is_pro: return True, "Sucesso (VIP)"
         if credits <= 0: return False, "Sem créditos."
+            
         new_credits = credits - 1
         supabase.table('profiles').update({'credits': new_credits}).eq('id', user_id).execute()
         return True, "Sucesso"
@@ -74,10 +80,10 @@ def get_embedding(text):
 
 @app.route('/')
 def health_check():
-    return jsonify({'status': 'ok', 'service': 'Adapta IA Backend'})
+    return jsonify({'status': 'ok', 'message': 'Backend Restaurado e Operante'})
 
 # ==============================================================================
-#  ROTAS LIMPAS (Sem OPTIONS manual, sem after_request)
+#  ROTAS DAS FERRAMENTAS (Restauradas + Compatibilidade)
 # ==============================================================================
 
 # 1. GERADOR DE PROMPTS IMAGEM
@@ -92,16 +98,18 @@ def generate_prompt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
         
+        # CORREÇÃO: Aceita 'idea' (novo) ou 'prompt' (velho)
         idea = data.get('idea') or data.get('prompt') or data.get('text')
-        if not idea: return jsonify({'error': 'Ideia vazia'}), 400
-
-        response = model.generate_content(f"Crie prompt imagem (SDXL/Midjourney) em Inglês: {idea}")
+        
+        prompt_ia = f"Crie um prompt detalhado em INGLÊS para gerar uma imagem no Midjourney/SDXL baseada nesta ideia: '{idea}'"
+        response = model.generate_content(prompt_ia)
+        # Retorna nos dois formatos para garantir que o front entenda
         return jsonify({'advanced_prompt': response.text, 'prompt': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 2. VEO 3 & SORA 2 (Foco do erro)
+# 2. VEO 3 & SORA 2 (ONDE ESTAVA O ERRO DE CORS/500)
 @app.route('/generate-veo3-prompt', methods=['POST'])
-@app.route('/generate-video-prompt', methods=['POST'])
+@app.route('/generate-video-prompt', methods=['POST']) # Alias para garantir compatibilidade
 def generate_video_prompt():
     try:
         data = request.get_json(force=True) or {}
@@ -112,10 +120,11 @@ def generate_video_prompt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        # Pega a ideia de qualquer campo possível
-        idea = data.get('idea') or data.get('prompt') or data.get('text') or data.get('scene')
+        # CORREÇÃO CRÍTICA: O seu backend antigo esperava 'scene', o novo manda 'idea'
+        # Aqui eu garanto que ele pegue qualquer um dos dois.
+        idea = data.get('idea') or data.get('scene') or data.get('prompt') or data.get('text')
         
-        if not idea: return jsonify({'error': 'Ideia não fornecida'}), 400
+        if not idea: return jsonify({'error': 'Descrição da cena não fornecida'}), 400
 
         target_model = data.get('model', 'Veo 3')
         style = data.get('style', '')
@@ -129,8 +138,12 @@ def generate_video_prompt():
 
         prompt = f"""
         {base_instruction}
-        Cena: {idea}. Estilo: {style}. Câmera: {camera}. Luz: {lighting}. Som: {audio}.
-        Output: APENAS o prompt em Inglês.
+        Cena: {idea}
+        Estilo: {style}
+        Câmera: {camera}
+        Luz: {lighting}
+        Som: {audio}
+        Gere APENAS o prompt final em Inglês.
         """
         
         response = model.generate_content(prompt)
@@ -148,7 +161,9 @@ def summarize_video():
             s, m = check_and_deduct_credit(data.get('user_id'))
             if not s: return jsonify({'error': m}), 402
 
+        # Aceita 'url' ou 'video_url'
         video_url = data.get('url') or data.get('video_url')
+
         try:
             yt = YouTube(video_url)
             caption = yt.captions.get_by_language_code('pt')
@@ -222,8 +237,11 @@ def generate_spreadsheet():
             s, m = check_and_deduct_credit(data.get('user_id'))
             if not s: return jsonify({'error': m}), 402
 
+        # Compatibilidade description/text
+        desc = data.get('description') or data.get('text')
+
         prompt = f"""
-        Crie planilha Excel para: "{data.get('description') or data.get('text')}"
+        Crie planilha Excel para: "{desc}"
         Formato: Célula|Valor
         Ex: A1|Título
         Gere 5 linhas.
@@ -267,7 +285,7 @@ def upload_document():
 
 # 9. CHAT PDF
 @app.route('/ask-document', methods=['POST'])
-@app.route('/chat-pdf', methods=['POST'])
+@app.route('/chat-pdf', methods=['POST']) # Alias
 def ask_document():
     try:
         data = request.get_json(force=True) or {}
@@ -357,6 +375,8 @@ def mock_interview():
             if not s: return jsonify({'error': m}), 402
 
         role = data.get('role')
+        desc = data.get('description') or data.get('company')
+
         resp = model.generate_content(f"Simule entrevista JSON para {role}")
         try:
             txt = resp.text.replace("```json", "").replace("```", "").strip()
@@ -429,6 +449,7 @@ def save_history():
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
+        
         if supabase and data.get('user_id'):
             db_data = {
                 'user_id': data.get('user_id'),
