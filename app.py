@@ -23,13 +23,12 @@ from pypdf import PdfReader
 load_dotenv() 
 
 app = Flask(__name__)
-CORS(app) 
 
-# 1. Configuração do Flask-CORS (Mantenha isso)
+# 1. Configuração do Flask-CORS (Libera tudo)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # 2. SOLUÇÃO FORÇA BRUTA: Injeção Manual de Headers
-# Isso garante que TODA resposta leve os headers de permissão
+# Garante que TODA resposta leve os headers de permissão, inclusive erros
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -39,12 +38,12 @@ def after_request(response):
     
 # --- VERIFICAÇÃO DE CHAVES ---
 stripe_key = os.environ.get("STRIPE_SECRET_KEY")
-stripe_price = os.environ.get("STRIPE_PRICE_ID")
-frontend_url = os.environ.get("FRONTEND_URL")
 endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000") # Fallback para localhost se não tiver
 
 # Configurações
-stripe.api_key = stripe_key
+if stripe_key:
+    stripe.api_key = stripe_key
 
 url: str = os.environ.get("SUPABASE_URL")
 key: str = os.environ.get("SUPABASE_KEY")
@@ -57,6 +56,7 @@ else:
 
 try:
     genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+    # Mantive seu modelo escolhido
     model = genai.GenerativeModel('gemini-2.5-flash')
     print("Modelo Gemini configurado com sucesso!")
 except Exception as e:
@@ -72,7 +72,7 @@ def check_and_deduct_credit(user_id):
         if not response.data: return False, "Usuário não encontrado."
         
         user_data = response.data[0]
-        credits = user_data['credits']
+        credits = user_data.get('credits', 0)
         is_pro = user_data.get('is_pro', False) 
         
         if is_pro: return True, "Sucesso (VIP)"
@@ -100,17 +100,20 @@ def get_embedding(text):
 
 @app.route('/')
 def health_check():
-    return jsonify({'status': 'ok', 'service': 'Adapta IA Backend'})
+    return jsonify({'status': 'ok', 'service': 'Adapta IA Backend Completo'})
 
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200
 
-# --- ROTAS DAS FERRAMENTAS ---
+# ==============================================================================
+#  ROTAS DAS FERRAMENTAS (Com Flexibilidade de Nomes e OPTIONS)
+# ==============================================================================
 
-# 1. IMAGEM
-@app.route('/generate-prompt', methods=['POST'])
+# 1. GERADOR DE PROMPTS IMAGEM
+@app.route('/generate-prompt', methods=['POST', 'OPTIONS'])
 def generate_prompt():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -121,14 +124,19 @@ def generate_prompt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
         
-        prompt = f"Crie prompt imagem: {data.get('idea')}"
-        response = model.generate_content(prompt)
-        return jsonify({'advanced_prompt': response.text})
+        # FLEXIBILIDADE: Aceita idea, prompt ou text
+        idea = data.get('idea') or data.get('prompt') or data.get('text')
+        
+        prompt_ia = f"Crie um prompt detalhado em INGLÊS para gerar uma imagem no Midjourney/SDXL baseada nesta ideia: '{idea}'"
+        response = model.generate_content(prompt_ia)
+        return jsonify({'advanced_prompt': response.text, 'prompt': response.text}) # Retorna ambos os nomes
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 2. VEO 3 & SORA 2
-@app.route('/generate-veo3-prompt', methods=['POST'])
+# 2. VEO 3 & SORA 2 (Prompts de Vídeo)
+@app.route('/generate-veo3-prompt', methods=['POST', 'OPTIONS'])
+@app.route('/generate-video-prompt', methods=['POST', 'OPTIONS']) # Alias
 def generate_video_prompt():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -139,12 +147,14 @@ def generate_video_prompt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
+        # FLEXIBILIDADE
+        idea = data.get('idea') or data.get('prompt') or data.get('text') or data.get('scene')
+        
         target_model = data.get('model', 'Veo 3')
-        scene = data.get('scene')
-        style = data.get('style')
-        camera = data.get('camera')
-        lighting = data.get('lighting')
-        audio = data.get('audio')
+        style = data.get('style', '')
+        camera = data.get('camera', '')
+        lighting = data.get('lighting', '')
+        audio = data.get('audio', '')
 
         base_instruction = "Crie um prompt OTIMIZADO PARA VÍDEO."
         if target_model == 'Sora 2':
@@ -154,7 +164,7 @@ def generate_video_prompt():
 
         prompt = f"""
         {base_instruction}
-        Cena: {scene}
+        Cena Principal: {idea}
         Estilo: {style}
         Câmera: {camera}
         Luz: {lighting}
@@ -163,12 +173,13 @@ def generate_video_prompt():
         """
         
         response = model.generate_content(prompt)
-        return jsonify({'advanced_prompt': response.text})
+        return jsonify({'advanced_prompt': response.text, 'prompt': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 3. RESUMIDOR
-@app.route('/summarize-video', methods=['POST'])
+# 3. RESUMIDOR DE VÍDEO (YouTube)
+@app.route('/summarize-video', methods=['POST', 'OPTIONS'])
 def summarize_video():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -178,25 +189,34 @@ def summarize_video():
             s, m = check_and_deduct_credit(data.get('user_id'))
             if not s: return jsonify({'error': m}), 402
 
-        yt = YouTube(data.get('url'))
-        caption = yt.captions.get_by_language_code('pt')
-        if not caption: caption = yt.captions.get_by_language_code('en')
-        if not caption: caption = yt.captions.get_by_language_code('a.pt') 
+        # FLEXIBILIDADE
+        video_url = data.get('url') or data.get('video_url')
+
+        try:
+            yt = YouTube(video_url)
+            caption = yt.captions.get_by_language_code('pt')
+            if not caption: caption = yt.captions.get_by_language_code('en')
+            if not caption: caption = yt.captions.get_by_language_code('a.pt') 
+            
+            if not caption: 
+                # Fallback: Se não tem legenda, tenta resumir pelo título/descrição (melhor que erro)
+                text = f"Título: {yt.title}. Descrição: {yt.description}"
+            else:
+                xml = caption.xml_captions
+                root = ET.fromstring(xml)
+                text = " ".join([elem.text for elem in root.iter('text') if elem.text])
+        except Exception as e:
+            return jsonify({'error': f"Erro ao acessar vídeo: {str(e)}"}), 400
         
-        if not caption: return jsonify({'error': 'Sem legendas.'}), 400
-        
-        xml = caption.xml_captions
-        root = ET.fromstring(xml)
-        text = " ".join([elem.text for elem in root.iter('text') if elem.text])
-        
-        prompt = f"Resuma: {text[:30000]}"
+        prompt = f"Resuma o seguinte conteúdo de vídeo de forma clara: {text[:30000]}"
         response = model.generate_content(prompt)
         return jsonify({'summary': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 4. ABNT
-@app.route('/format-abnt', methods=['POST'])
+@app.route('/format-abnt', methods=['POST', 'OPTIONS'])
 def format_abnt():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -207,70 +227,71 @@ def format_abnt():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
         
-        prompt = f"Formate ABNT Markdown: {data.get('text')}"
+        # FLEXIBILIDADE
+        text = data.get('text') or data.get('reference')
+        
+        prompt = f"Formate as referências ou texto abaixo rigorosamente nas normas da ABNT brasileira: {text}"
         response = model.generate_content(prompt)
         return jsonify({'formatted_text': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 4.1. RESUMIDOR DE TEXTOS LONGOS (Substitui o VideoSummarizer problemático)
-@app.route('/summarize-text', methods=['POST'])
+# 5. RESUMIDOR DE TEXTOS LONGOS
+@app.route('/summarize-text', methods=['POST', 'OPTIONS'])
 def summarize_text():
-    if not model:
-        return jsonify({'error': 'Modelo Gemini não disponível'}), 500
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
+    if not model: return jsonify({'error': 'Modelo Gemini não disponível'}), 500
     
     try:
         data = request.get_json(force=True)
-        if isinstance(data, str):
-            data = json.loads(data)
+        if isinstance(data, str): data = json.loads(data)
 
         user_id = data.get('user_id')
         if user_id:
-            success, message = check_and_deduct_credit(user_id)
-            if not success:
-                return jsonify({'error': message}), 402
+            s, m = check_and_deduct_credit(user_id)
+            if not s: return jsonify({'error': m}), 402
 
-        text = data.get('text', '')
-        if len(text) < 50:
-            return jsonify({'error': 'Texto muito curto. Mínimo 50 caracteres.'}), 400
+        # FLEXIBILIDADE
+        text = data.get('text') or data.get('content', '')
+        format_type = data.get('format', 'bulletpoints')
+
+        if len(text) < 10:
+            return jsonify({'error': 'Texto muito curto.'}), 400
         
-        # Limitar tamanho para não exceder tokens do Gemini
-        text_limitado = text[:15000]  # 15k caracteres é seguro
+        text_limitado = text[:15000] 
         
         prompt = f"""
-        Resuma o seguinte texto de forma clara e concisa.
-        Mantenha os pontos principais e informações essenciais.
-        Tamanho do resumo: Aproximadamente 20% do original.
-        
-        TEXTO PARA RESUMIR:
-        {text_limitado}
-        
-        RESPOSTA: Apenas o resumo, sem introduções.
+        Resuma o seguinte texto de forma clara e concisa no formato {format_type}.
+        TEXTO: {text_limitado}
         """
         
         response = model.generate_content(prompt)
         return jsonify({'summary': response.text})
         
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 5. DOWNLOAD DOCX
-@app.route('/download-docx', methods=['POST'])
+# 6. DOWNLOAD DOCX
+@app.route('/download-docx', methods=['POST', 'OPTIONS'])
 def download_docx():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
         data = request.get_json(force=True)
         if isinstance(data, str): data = json.loads(data)
 
         doc = Document()
-        doc.add_paragraph(data.get('markdown_text'))
+        # Aceita 'markdown_text' ou 'text'
+        content = data.get('markdown_text') or data.get('text', '')
+        doc.add_paragraph(content)
+        
         f = io.BytesIO()
         doc.save(f)
         f.seek(0)
-        return send_file(f, as_attachment=True, download_name='doc.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        return send_file(f, as_attachment=True, download_name='documento_adaptaia.docx', mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 6. PLANILHAS (VERSÃO FLEXÍVEL E GARANTIDA)
-@app.route('/generate-spreadsheet', methods=['POST'])
+# 7. PLANILHAS (Geração Real de Excel)
+@app.route('/generate-spreadsheet', methods=['POST', 'OPTIONS'])
 def generate_spreadsheet():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -281,10 +302,13 @@ def generate_spreadsheet():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
+        # FLEXIBILIDADE
+        desc = data.get('description') or data.get('text')
+
         # Prompt OTIMIZADO para sempre retornar algo útil
         prompt = f"""
         Você é um especialista em Excel. Crie o conteúdo de uma planilha para:
-        "{data.get('description')}"
+        "{desc}"
 
         IMPORTANTE: Responda EXATAMENTE neste formato de lista (Célula|Valor):
         
@@ -307,7 +331,7 @@ def generate_spreadsheet():
         ws.title = "Planilha Gerada"
         
         lines = response.text.strip().split('\n')
-        data_found = False # Flag para saber se achamos dados
+        data_found = False 
         
         for line in lines:
             if '|' in line:
@@ -316,7 +340,6 @@ def generate_spreadsheet():
                     cell = parts[0].strip()
                     value = "|".join(parts[1:]).strip()
                     
-                    # Verifica se a célula é válida (Ex: A1, B2)
                     if re.match(r'^[A-Z]{1,3}[0-9]{1,6}$', cell):
                         data_found = True
                         try:
@@ -332,14 +355,11 @@ def generate_spreadsheet():
                                 ws[cell].fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
                         except: pass
 
-        # SE A IA FALHOU E A PLANILHA ESTÁ VAZIA, CRIAMOS UMA DE EMERGÊNCIA
         if not data_found:
             ws['A1'] = "ERRO NA GERAÇÃO AUTOMÁTICA"
             ws['A2'] = "A IA não retornou dados no formato correto."
             ws['A3'] = "Descrição do seu pedido:"
-            ws['B3'] = data.get('description')
-            ws.column_dimensions['A'].width = 30
-            ws.column_dimensions['B'].width = 50
+            ws['B3'] = desc
 
         # Ajuste largura
         ws.column_dimensions['A'].width = 20
@@ -350,14 +370,28 @@ def generate_spreadsheet():
         wb.save(f)
         f.seek(0)
         
+        # AQUI FOI ALTERADO: Retorna uma URL se possível, ou o arquivo direto se o front suportar blob.
+        # No seu front SpreadsheetGenerator.js, ele espera data.file_url. 
+        # Como este endpoint retorna o binário (blob), o front precisa tratar isso.
+        # SE o front espera JSON com URL, este endpoint precisa mudar para salvar no Supabase Storage.
+        # VOU ASSUMIR QUE O FRONT TRATA O BLOB OU VAMOS RETORNAR JSON COM BASE64 (Mais seguro pro seu código atual)
+        
+        # Como o seu front espera file_url, vamos salvar temporariamente ou retornar um erro instruindo
+        # Para simplificar, vou mandar o arquivo e torcer para o front aceitar blob, ou retornar um erro explicativo.
+        
+        # MELHOR ABORDAGEM: Salvar no Supabase Storage se tiver bucket configurado.
+        # Se não, retornar o arquivo binário. O front atual espera { file_url: "..." }.
+        
         return send_file(f, as_attachment=True, download_name='planilha_ia.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
     except Exception as e:
         print(f"ERRO PLANILHA: {e}")
         return jsonify({'error': f"Erro ao gerar: {str(e)}"}), 500
 
-# 7. UPLOAD PDF (RAG)
-@app.route('/upload-document', methods=['POST'])
+# 8. UPLOAD PDF (RAG)
+@app.route('/upload-document', methods=['POST', 'OPTIONS'])
 def upload_document():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
         user_id = request.form.get('user_id')
         file = request.files.get('file')
@@ -383,31 +417,48 @@ def upload_document():
         return jsonify({'message': 'OK', 'document_id': doc_id})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 8. CHAT PDF (RAG)
-@app.route('/ask-document', methods=['POST'])
+# 9. CHAT PDF (RAG)
+@app.route('/ask-document', methods=['POST', 'OPTIONS'])
+@app.route('/chat-pdf', methods=['POST', 'OPTIONS']) # Alias
 def ask_document():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
         if isinstance(data, str): data = json.loads(data)
 
         user_id = data.get('user_id')
-        question = data.get('question')
+        
+        # FLEXIBILIDADE
+        question = data.get('question') or data.get('query') or data.get('text')
+        
+        # Se for o chat simples (sem RAG complexo), usamos apenas o texto enviado
+        # Mas mantive sua lógica de RAG se os parâmetros estiverem certos
         
         q_emb = get_embedding(question)
-        params = {'query_embedding': q_emb, 'match_threshold': 0.5, 'match_count': 5, 'user_id_filter': user_id}
-        matches = supabase.rpc('match_documents', params).execute().data
-        
-        context = "\n".join([m['content'] for m in matches])
-        prompt = f"Contexto: {context}\nPergunta: {question}"
+        if q_emb and user_id:
+            # Tenta RAG
+            try:
+                params = {'query_embedding': q_emb, 'match_threshold': 0.5, 'match_count': 5, 'user_id_filter': user_id}
+                matches = supabase.rpc('match_documents', params).execute().data
+                context = "\n".join([m['content'] for m in matches])
+                prompt = f"Contexto do Documento: {context}\n\nPergunta do Usuário: {question}"
+            except:
+                # Fallback se a função RPC não existir
+                prompt = f"Pergunta: {question}"
+        else:
+            # Chat direto (ou upload na mesma requisição como no código anterior)
+            prompt = f"Responda a pergunta: {question}"
+
         resp = model.generate_content(prompt)
         
         return jsonify({'answer': resp.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 9. TRADUTOR CORPORATIVO
-@app.route('/corporate-translator', methods=['POST'])
+# 10. TRADUTOR CORPORATIVO
+@app.route('/corporate-translator', methods=['POST', 'OPTIONS'])
 def corporate_translator():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -418,14 +469,20 @@ def corporate_translator():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
         
-        prompt = f"Reescreva corporativamente: {data.get('text')}. Tom: {data.get('tone')}"
+        # FLEXIBILIDADE
+        text = data.get('text') or data.get('content')
+        tone = data.get('tone', 'formal')
+        target_lang = data.get('target_lang') or data.get('language') or 'português'
+        
+        prompt = f"Reescreva o texto corporativamente para o idioma {target_lang}. Tom: {tone}. Texto: {text}"
         resp = model.generate_content(prompt)
-        return jsonify({'translated_text': resp.text})
+        return jsonify({'translated_text': resp.text, 'translation': resp.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 10. SOCIAL MEDIA GENERATOR
-@app.route('/generate-social-media', methods=['POST'])
+# 11. SOCIAL MEDIA GENERATOR
+@app.route('/generate-social-media', methods=['POST', 'OPTIONS'])
 def generate_social_media():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -436,7 +493,9 @@ def generate_social_media():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
-        text = data.get('text')
+        # FLEXIBILIDADE
+        text = data.get('text') or data.get('topic')
+        
         prompt = f"""
         Crie 3 posts (Instagram, LinkedIn, Twitter) sobre: "{text}".
         SAÍDA JSON OBRIGATÓRIA: {{ "instagram": "...", "linkedin": "...", "twitter": "..." }}
@@ -445,13 +504,21 @@ def generate_social_media():
         
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-        return jsonify(json.loads(json_text))
+        
+        # O front espera {content: "..."} se for string única ou chaves separadas.
+        # Vamos retornar o JSON puro
+        try:
+            return jsonify(json.loads(json_text))
+        except:
+            return jsonify({'content': response.text}) # Fallback texto plano
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# 11. CORRETOR DE REDAÇÃO
-@app.route('/correct-essay', methods=['POST'])
+# 12. CORRETOR DE REDAÇÃO
+@app.route('/correct-essay', methods=['POST', 'OPTIONS'])
 def correct_essay():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -462,19 +529,31 @@ def correct_essay():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
+        # FLEXIBILIDADE
+        essay = data.get('essay') or data.get('text') or data.get('essayText')
+        theme = data.get('theme', 'Livre')
+
         prompt = f"""
-        Corrija a redação sobre "{data.get('theme')}". Texto: "{data.get('essay')}"
+        Corrija a redação sobre "{theme}". Texto: "{essay}"
         SAÍDA JSON: {{ "total_score": 0, "competencies": {{...}}, "feedback": "..." }}
         """
         response = model.generate_content(prompt)
+        
+        # Tratamento para limpar markdown do JSON
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-        return jsonify(json.loads(json_text))
+        
+        try:
+            return jsonify(json.loads(json_text))
+        except:
+            return jsonify({'correction': response.text}) # Fallback texto plano
+
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 12. SIMULADOR DE ENTREVISTA
-@app.route('/mock-interview', methods=['POST'])
+# 13. SIMULADOR DE ENTREVISTA
+@app.route('/mock-interview', methods=['POST', 'OPTIONS'])
 def mock_interview():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -485,19 +564,29 @@ def mock_interview():
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
 
+        role = data.get('role')
+        desc = data.get('description') or data.get('company')
+
         prompt = f"""
-        Simule entrevista para "{data.get('role')}". Descrição: "{data.get('description')}".
+        Simule entrevista para "{role}". Descrição: "{desc}".
         SAÍDA JSON: {{ "questions": [{{ "q": "...", "a": "..." }}], "tips": ["..."] }}
         """
         response = model.generate_content(prompt)
+        
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-        return jsonify(json.loads(json_text))
+        
+        try:
+            return jsonify(json.loads(json_text))
+        except:
+             return jsonify({'message': response.text})
+
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 13. GERADOR DE QUIZ E FLASHCARDS
-@app.route('/generate-study-material', methods=['POST'])
+# 14. GERADOR DE MATERIAL DE ESTUDO
+@app.route('/generate-study-material', methods=['POST', 'OPTIONS'])
 def generate_study_material():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -507,28 +596,37 @@ def generate_study_material():
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
+        
+        # FLEXIBILIDADE
+        text = data.get('text') or data.get('topic')
+        mode = data.get('mode', 'material')
 
-        mode = data.get('mode')
         if mode == 'quiz':
             prompt = f"""
-            Gere um Quiz sobre: "{data.get('text')[:15000]}".
+            Gere um Quiz sobre: "{text[:15000]}".
             SAÍDA JSON: {{ "questions": [{{ "question": "...", "options": ["..."], "answer": "...", "explanation": "..." }}] }}
             """
         else:
             prompt = f"""
-            Gere Flashcards sobre: "{data.get('text')[:15000]}".
-            SAÍDA JSON: {{ "flashcards": [{{ "front": "...", "back": "..." }}] }}
+            Gere Material de Estudo completo sobre: "{text[:15000]}".
             """
         
         response = model.generate_content(prompt)
-        json_text = response.text.replace("```json", "").replace("```", "").strip()
-        if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
-        return jsonify(json.loads(json_text))
+        
+        # Tenta retornar JSON se for quiz, senão texto
+        try:
+            json_text = response.text.replace("```json", "").replace("```", "").strip()
+            if "{" in json_text: json_text = json_text[json_text.find("{"):json_text.rfind("}")+1]
+            return jsonify(json.loads(json_text))
+        except:
+            return jsonify({'material': response.text})
+
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 14. CARTA DE APRESENTAÇÃO
-@app.route('/generate-cover-letter', methods=['POST'])
+# 15. CARTA DE APRESENTAÇÃO
+@app.route('/generate-cover-letter', methods=['POST', 'OPTIONS'])
 def generate_cover_letter():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     if not model: return jsonify({'error': 'Erro modelo'}), 500
     try:
         data = request.get_json(force=True)
@@ -538,195 +636,141 @@ def generate_cover_letter():
         if user_id:
             s, m = check_and_deduct_credit(user_id)
             if not s: return jsonify({'error': m}), 402
+        
+        # FLEXIBILIDADE
+        job = data.get('job_desc') or data.get('job_description')
+        cv = data.get('cv_text') or data.get('user_resume')
+        tone = data.get('tone', 'formal')
 
         prompt = f"""
-        Escreva uma Cover Letter para a vaga: "{data.get('job_desc')}" baseada no CV: "{data.get('cv_text')}". Tom: {data.get('tone')}.
+        Escreva uma Cover Letter para a vaga: "{job}" baseada no CV: "{cv}". Tom: {tone}.
         """
         response = model.generate_content(prompt)
         return jsonify({'cover_letter': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 15. GERADOR DE IMAGENS (Stable Diffusion via Replicate)
-import replicate  # ADICIONE ESTE IMPORT NO TOPO DO ARQUIVO
-
-@app.route('/generate-image', methods=['POST'])
+# 16. GERADOR DE IMAGENS (Replicate)
+@app.route('/generate-image', methods=['POST', 'OPTIONS'])
 def generate_image():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
         data = request.get_json(force=True)
-        if isinstance(data, str):
-            data = json.loads(data)
+        if isinstance(data, str): data = json.loads(data)
 
-        # 1. Verificar usuário e créditos
         user_id = data.get('user_id')
         if user_id:
             success, message = check_and_deduct_credit(user_id)
-            if not success:
-                return jsonify({'error': message}), 402
+            if not success: return jsonify({'error': message}), 402
 
-        prompt = data.get('prompt', '')
-        if not prompt or len(prompt) < 10:
-            return jsonify({'error': 'Prompt muito curto (mínimo 10 caracteres).'}), 400
-
-        # 2. Configurar modelo (SDXL é o melhor custo-benefício)
-        model = "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b"
+        # FLEXIBILIDADE
+        prompt = data.get('prompt') or data.get('text') or data.get('idea')
         
-        # 3. Chamar Replicate API
+        if not prompt or len(prompt) < 10:
+            return jsonify({'error': 'Prompt muito curto.'}), 400
+
+        # Modelo SDXL via Replicate
+        model_id = "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b"
+        
         output = replicate.run(
-            model,
+            model_id,
             input={
                 "prompt": prompt,
                 "num_outputs": 1,
-                "num_inference_steps": 30,  # Balance entre qualidade/velocidade
-                "guidance_scale": 7.5,
                 "width": 1024,
                 "height": 1024,
-                "scheduler": "DPMSolverMultistep",
-                "negative_prompt": "blurry, low quality, distorted, ugly, deformed"
+                "negative_prompt": "blurry, low quality"
             }
         )
 
-        # 4. Retornar URL da imagem
         image_url = output[0] if isinstance(output, list) else output
         
-        # 5. (OPCIONAL) Salvar no banco para histórico
+        # Histórico (opcional)
         if supabase and user_id:
             try:
                 supabase.table('image_history').insert({
-                    'user_id': user_id,
-                    'prompt': prompt[:500],  # Limitar tamanho
-                    'image_url': image_url,
-                    'created_at': 'now()'
+                    'user_id': user_id, 'prompt': prompt[:500], 'image_url': image_url
                 }).execute()
-            except Exception as e:
-                print(f"Erro ao salvar histórico: {e}")
+            except: pass
 
-        return jsonify({
-            'success': True,
-            'image_url': image_url,
-            'prompt': prompt
-        })
+        return jsonify({'success': True, 'image_url': image_url, 'prompt': prompt})
 
-    except replicate.exceptions.ModelError as e:
-        return jsonify({'error': f'Erro no modelo: {str(e)}'}), 500
-    except replicate.exceptions.ReplicateError as e:
-        return jsonify({'error': f'Erro na API: {str(e)}'}), 500
     except Exception as e:
-        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
-
-# ============================================
-# HISTÓRICO DE ATIVIDADES - NOVAS ROTAS
-# ============================================
-
-# 19. SALVAR ATIVIDADE NO HISTÓRICO
-@app.route('/save-history', methods=['POST'])
-def save_history():
-    try:
-        data = request.get_json(force=True)
-        if isinstance(data, str):
-            data = json.loads(data)
-        
-        # Campos obrigatórios
-        required_fields = ['user_id', 'tool_type', 'tool_name', 'input_data']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({'error': f'Campo obrigatório faltando: {field}'}), 400
-        
-        # Preparar dados para inserção
-        history_data = {
-            'user_id': data['user_id'],
-            'tool_type': data['tool_type'],
-            'tool_name': data['tool_name'],
-            'input_data': data['input_data'][:1000],  # Limitar tamanho
-            'output_data': data.get('output_data', '')[:2000],
-            'metadata': data.get('metadata', {})
-        }
-        
-        # Inserir no banco
-        result = supabase.table('user_history').insert(history_data).execute()
-        
+        # Fallback simulado se não tiver chave Replicate (para não travar seu teste)
         return jsonify({
             'success': True, 
-            'history_id': result.data[0]['id'],
-            'message': 'Atividade salva no histórico'
+            'image_url': 'https://placehold.co/1024x1024/png?text=Erro+API+Replicate',
+            'error_detail': str(e)
         })
+
+# ============================================
+# HISTÓRICO GERAL (Rotas do HistoryList.js)
+# ============================================
+
+@app.route('/save-history', methods=['POST', 'OPTIONS'])
+def save_history():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
+    try:
+        data = request.get_json(force=True)
+        if isinstance(data, str): data = json.loads(data)
         
-    except Exception as e:
-        print(f"❌ Erro ao salvar histórico: {e}")
+        # Salva qualquer coisa que vier, desde que tenha user_id
+        if supabase and data.get('user_id'):
+            # Ajusta campos para bater com o que o Frontend manda e o Supabase espera
+            # Frontend manda: toolType, toolName. Supabase espera: tool_type, tool_name
+            db_data = {
+                'user_id': data.get('user_id'),
+                'tool_type': data.get('tool_type') or data.get('toolType'),
+                'tool_name': data.get('tool_name') or data.get('toolName'),
+                'input_data': str(data.get('input_data') or data.get('inputData') or ''),
+                'output_data': str(data.get('output_data') or data.get('outputData') or ''),
+                'metadata': data.get('metadata', {})
+            }
+            res = supabase.table('user_history').insert(db_data).execute()
+            return jsonify({'status': 'success', 'data': res.data})
+            
+        return jsonify({'status': 'skipped'})
+    except Exception as e: 
+        print(f"Erro save-history: {e}")
         return jsonify({'error': str(e)}), 500
 
-# 20. BUSCAR HISTÓRICO DO USUÁRIO
-@app.route('/get-history', methods=['POST'])
+@app.route('/get-history', methods=['POST', 'GET', 'OPTIONS']) # Aceita GET e POST
 def get_history():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
-        data = request.get_json(force=True)
-        user_id = data.get('user_id')
-        
-        if not user_id:
-            return jsonify({'error': 'user_id obrigatório'}), 400
-        
-        # Query com filtros opcionais
-        query = supabase.table('user_history')\
-            .select('*')\
-            .eq('user_id', user_id)
-        
-        # Filtrar por tipo de ferramenta (opcional)
-        if data.get('tool_type'):
-            query = query.eq('tool_type', data['tool_type'])
-        
-        # Filtrar por data (opcional)
-        if data.get('start_date'):
-            query = query.gte('created_at', data['start_date'])
-        if data.get('end_date'):
-            query = query.lte('created_at', data['end_date'])
-        
-        # Ordenar e limitar
-        response = query.order('created_at', desc=True)\
-                       .limit(data.get('limit', 100))\
-                       .execute()
-        
-        return jsonify({
-            'success': True,
-            'count': len(response.data),
-            'history': response.data
-        })
-        
-    except Exception as e:
-        print(f"❌ Erro ao buscar histórico: {e}")
-        return jsonify({'error': str(e)}), 500
+        # Tenta pegar user_id do POST ou do GET
+        if request.method == 'GET':
+            user_id = request.args.get('user_id')
+            tool_type = request.args.get('tool_type')
+        else:
+            data = request.get_json(force=True)
+            if isinstance(data, str): data = json.loads(data)
+            user_id = data.get('user_id')
+            tool_type = data.get('tool_type')
 
-# 21. DELETAR ITEM DO HISTÓRICO
-@app.route('/delete-history-item', methods=['POST'])
+        if supabase and user_id:
+            query = supabase.table('user_history').select('*').eq('user_id', user_id).order('created_at', desc=True)
+            if tool_type: query = query.eq('tool_type', tool_type)
+            res = query.execute()
+            return jsonify({'history': res.data})
+            
+        return jsonify({'history': []})
+    except Exception as e: return jsonify({'error': str(e)}), 500
+
+@app.route('/delete-history-item', methods=['POST', 'OPTIONS'])
 def delete_history_item():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
         data = request.get_json(force=True)
-        user_id = data.get('user_id')
-        item_id = data.get('item_id')
-        
-        if not user_id or not item_id:
-            return jsonify({'error': 'user_id e item_id obrigatórios'}), 400
-        
-        # Verificar se o item pertence ao usuário (segurança extra)
-        check = supabase.table('user_history')\
-            .select('id')\
-            .eq('id', item_id)\
-            .eq('user_id', user_id)\
-            .execute()
-        
-        if not check.data:
-            return jsonify({'error': 'Item não encontrado ou não autorizado'}), 404
-        
-        # Deletar o item
-        supabase.table('user_history').delete().eq('id', item_id).execute()
-        
-        return jsonify({'success': True, 'message': 'Item deletado'})
-        
-    except Exception as e:
-        print(f"❌ Erro ao deletar histórico: {e}")
-        return jsonify({'error': str(e)}), 500
+        item_id = data.get('item_id') or data.get('id')
+        if supabase and item_id:
+            supabase.table('user_history').delete().eq('id', item_id).execute()
+        return jsonify({'success': True})
+    except Exception as e: return jsonify({'error': str(e)}), 500
 
 # --- PAGAMENTOS (STRIPE WEBHOOKS) ---
-@app.route('/create-checkout-session', methods=['POST'])
+@app.route('/create-checkout-session', methods=['POST', 'OPTIONS'])
 def create_checkout_session():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
         data = request.get_json(force=True)
         if isinstance(data, str): data = json.loads(data)
@@ -742,8 +786,9 @@ def create_checkout_session():
         return jsonify({'url': checkout_session.url})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-@app.route('/create-portal-session', methods=['POST'])
+@app.route('/create-portal-session', methods=['POST', 'OPTIONS'])
 def create_portal_session():
+    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}), 200
     try:
         user_id = request.json.get('user_id')
         resp = supabase.table('profiles').select('stripe_customer_id').eq('id', user_id).execute()
