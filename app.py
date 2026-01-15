@@ -5,8 +5,8 @@ import re
 import google.generativeai as genai
 import stripe
 import replicate
-from flask import Flask, request, jsonify, send_file, make_response
-from flask_cors import CORS
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS # Apenas a biblioteca, sem tralhas manuais
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -22,29 +22,12 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÃO CORS BLINDADA ---
-# 1. Habilita biblioteca
+# --- CONFIGURAÇÃO CORS CORRETA ---
+# Habilita CORS para todas as rotas e todas as origens (*)
+# Isso lida automaticamente com o método OPTIONS
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# 2. Intercepta TODA requisição OPTIONS globalmente (Preflight Handler)
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add("Access-Control-Allow-Headers", "*")
-        response.headers.add("Access-Control-Allow-Methods", "*")
-        return response
-
-# 3. Garante headers em TODAS as respostas (Sucesso ou Erro)
-@app.after_request
-def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
-    return response
-
-# --- CONFIGURAÇÕES ---
+# --- VERIFICAÇÃO DE CHAVES ---
 stripe_key = os.environ.get("STRIPE_SECRET_KEY")
 endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
 frontend_url = os.environ.get("FRONTEND_URL", "*")
@@ -94,13 +77,12 @@ def health_check():
     return jsonify({'status': 'ok', 'service': 'Adapta IA Backend'})
 
 # ==============================================================================
-#  ROTAS (Todas incluem OPTIONS explicitamente agora)
+#  ROTAS LIMPAS (Sem OPTIONS manual, sem after_request)
 # ==============================================================================
 
 # 1. GERADOR DE PROMPTS IMAGEM
-@app.route('/generate-prompt', methods=['POST', 'OPTIONS'])
+@app.route('/generate-prompt', methods=['POST'])
 def generate_prompt():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'}) # Fallback local
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -117,13 +99,10 @@ def generate_prompt():
         return jsonify({'advanced_prompt': response.text, 'prompt': response.text})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# 2. VEO 3 & SORA 2 (Onde estava o erro)
-@app.route('/generate-veo3-prompt', methods=['POST', 'OPTIONS'])
-@app.route('/generate-video-prompt', methods=['POST', 'OPTIONS'])
+# 2. VEO 3 & SORA 2 (Foco do erro)
+@app.route('/generate-veo3-prompt', methods=['POST'])
+@app.route('/generate-video-prompt', methods=['POST'])
 def generate_video_prompt():
-    # O handler global @app.before_request deve pegar isso, mas deixamos aqui por segurança
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
-    
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -159,9 +138,8 @@ def generate_video_prompt():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 3. RESUMIDOR DE VÍDEO
-@app.route('/summarize-video', methods=['POST', 'OPTIONS'])
+@app.route('/summarize-video', methods=['POST'])
 def summarize_video():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -189,9 +167,8 @@ def summarize_video():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 4. ABNT
-@app.route('/format-abnt', methods=['POST', 'OPTIONS'])
+@app.route('/format-abnt', methods=['POST'])
 def format_abnt():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -205,9 +182,8 @@ def format_abnt():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 5. RESUMIDOR DE TEXTO
-@app.route('/summarize-text', methods=['POST', 'OPTIONS'])
+@app.route('/summarize-text', methods=['POST'])
 def summarize_text():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -223,9 +199,8 @@ def summarize_text():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 6. DOWNLOAD DOCX
-@app.route('/download-docx', methods=['POST', 'OPTIONS'])
+@app.route('/download-docx', methods=['POST'])
 def download_docx():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -238,9 +213,8 @@ def download_docx():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 7. PLANILHA
-@app.route('/generate-spreadsheet', methods=['POST', 'OPTIONS'])
+@app.route('/generate-spreadsheet', methods=['POST'])
 def generate_spreadsheet():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -270,9 +244,8 @@ def generate_spreadsheet():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 8. UPLOAD PDF
-@app.route('/upload-document', methods=['POST', 'OPTIONS'])
+@app.route('/upload-document', methods=['POST'])
 def upload_document():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         user_id = request.form.get('user_id')
         file = request.files.get('file')
@@ -293,10 +266,9 @@ def upload_document():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 9. CHAT PDF
-@app.route('/ask-document', methods=['POST', 'OPTIONS'])
-@app.route('/chat-pdf', methods=['POST', 'OPTIONS'])
+@app.route('/ask-document', methods=['POST'])
+@app.route('/chat-pdf', methods=['POST'])
 def ask_document():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -320,9 +292,8 @@ def ask_document():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 10. TRADUTOR
-@app.route('/corporate-translator', methods=['POST', 'OPTIONS'])
+@app.route('/corporate-translator', methods=['POST'])
 def corporate_translator():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -337,9 +308,8 @@ def corporate_translator():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 11. SOCIAL MEDIA
-@app.route('/generate-social-media', methods=['POST', 'OPTIONS'])
+@app.route('/generate-social-media', methods=['POST'])
 def generate_social_media():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -358,9 +328,8 @@ def generate_social_media():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 12. REDAÇÃO
-@app.route('/correct-essay', methods=['POST', 'OPTIONS'])
+@app.route('/correct-essay', methods=['POST'])
 def correct_essay():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -378,9 +347,8 @@ def correct_essay():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 13. ENTREVISTA
-@app.route('/mock-interview', methods=['POST', 'OPTIONS'])
+@app.route('/mock-interview', methods=['POST'])
 def mock_interview():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -398,9 +366,8 @@ def mock_interview():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 14. ESTUDO
-@app.route('/generate-study-material', methods=['POST', 'OPTIONS'])
+@app.route('/generate-study-material', methods=['POST'])
 def generate_study_material():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -418,9 +385,8 @@ def generate_study_material():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 15. CARTA
-@app.route('/generate-cover-letter', methods=['POST', 'OPTIONS'])
+@app.route('/generate-cover-letter', methods=['POST'])
 def generate_cover_letter():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -434,9 +400,8 @@ def generate_cover_letter():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 16. IMAGEM (Replicate)
-@app.route('/generate-image', methods=['POST', 'OPTIONS'])
+@app.route('/generate-image', methods=['POST'])
 def generate_image():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -459,9 +424,8 @@ def generate_image():
         return jsonify({'success': True, 'image_url': 'https://placehold.co/1024x1024/png?text=Erro+Replicate', 'error_detail': str(e)})
 
 # --- HISTÓRICO ---
-@app.route('/save-history', methods=['POST', 'OPTIONS'])
+@app.route('/save-history', methods=['POST'])
 def save_history():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -479,9 +443,8 @@ def save_history():
         return jsonify({'status': 'skipped'})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-@app.route('/get-history', methods=['POST', 'GET', 'OPTIONS'])
+@app.route('/get-history', methods=['POST', 'GET'])
 def get_history():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         user_id = request.args.get('user_id')
         tool_type = request.args.get('tool_type')
@@ -499,9 +462,8 @@ def get_history():
         return jsonify({'history': []})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-@app.route('/delete-history-item', methods=['POST', 'OPTIONS'])
+@app.route('/delete-history-item', methods=['POST'])
 def delete_history_item():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         item_id = data.get('item_id') or data.get('id')
@@ -511,9 +473,8 @@ def delete_history_item():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # --- PAGAMENTO ---
-@app.route('/create-checkout-session', methods=['POST', 'OPTIONS'])
+@app.route('/create-checkout-session', methods=['POST'])
 def create_checkout_session():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         data = request.get_json(force=True) or {}
         if isinstance(data, str): data = json.loads(data)
@@ -529,9 +490,8 @@ def create_checkout_session():
         return jsonify({'url': session.url})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-@app.route('/create-portal-session', methods=['POST', 'OPTIONS'])
+@app.route('/create-portal-session', methods=['POST'])
 def create_portal_session():
-    if request.method == 'OPTIONS': return jsonify({'status': 'ok'})
     try:
         user_id = request.json.get('user_id')
         resp = supabase.table('profiles').select('stripe_customer_id').eq('id', user_id).execute()
