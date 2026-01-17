@@ -22,28 +22,47 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÃO CORS "BLINDADA" (MANUAL) ---
-# Habilita a lib básica
-CORS(app)
+# --- CONFIGURAÇÃO CORS MELHORADA ---
+# Define as origens permitidas especificamente
+ALLOWED_ORIGINS = [
+    "https://gerador-prompt-frontend-rc35.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
 
-# 1. INTERCEPTADOR DE PREFLIGHT (A Mágica acontece aqui)
-# Se o navegador perguntar "Posso?", respondemos "Pode!" antes de qualquer erro acontecer.
+# Configuração robusta do CORS
+CORS(app, 
+     origins=ALLOWED_ORIGINS,
+     allow_headers=["Content-Type", "Authorization", "Accept"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     supports_credentials=True,
+     max_age=3600)
+
+# 1. MANEJO ESPECÍFICO DE PREFLIGHT
 @app.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
         response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add("Access-Control-Allow-Headers", "*")
-        response.headers.add("Access-Control-Allow-Methods", "*")
+        response.headers.add("Access-Control-Allow-Origin", request.headers.get("Origin", "*"))
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization,Accept")
+        response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        response.headers.add("Access-Control-Max-Age", "3600")
         return response
 
-# 2. INJETOR DE HEADERS
-# Garante que a resposta final leve a permissão junto.
+# 2. INJETOR DE HEADERS APÓS CADA REQUEST
 @app.after_request
 def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
+    origin = request.headers.get('Origin')
+    if origin in ALLOWED_ORIGINS:
+        response.headers.add("Access-Control-Allow-Origin", origin)
+    else:
+        response.headers.add("Access-Control-Allow-Origin", "https://gerador-prompt-frontend-rc35.vercel.app")
+    
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization,Accept")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+    response.headers.add("Access-Control-Allow-Credentials", "true")
+    response.headers.add("Vary", "Origin")
     return response
 
 # --- CONFIGURAÇÕES ---
