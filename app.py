@@ -1,3 +1,5 @@
+# app.py - CORREÇÃO CORS
+
 import os
 import io
 import json
@@ -6,63 +8,45 @@ import google.generativeai as genai
 import stripe
 import replicate
 from flask import Flask, request, jsonify, send_file, make_response
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# --- FERRAMENTAS EXTRAS ---
-from pytube import YouTube
-import xml.etree.ElementTree as ET
-from docx import Document
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font
-from pypdf import PdfReader 
+# ... resto dos imports ...
 
 load_dotenv() 
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÃO CORS MELHORADA ---
-# Define as origens permitidas especificamente
-ALLOWED_ORIGINS = [
-    "https://gerador-prompt-frontend-rc35.vercel.app",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000"
-]
-
-# Configuração robusta do CORS
+# --- CONFIGURAÇÃO CORS CORRETA ---
+# Isso deve vir ANTES de todas as rotas
 CORS(app, 
-     origins=ALLOWED_ORIGINS,
-     allow_headers=["Content-Type", "Authorization", "Accept"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     origins=["https://gerador-prompt-frontend-rc35.vercel.app", 
+              "http://localhost:3000",
+              "http://127.0.0.1:3000"],
      supports_credentials=True,
-     max_age=3600)
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization", "Accept"])
 
-# 1. MANEJO ESPECÍFICO DE PREFLIGHT
+# Middleware para lidar com preflight
 @app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
+def handle_options_request():
+    if request.method == 'OPTIONS':
         response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", request.headers.get("Origin", "*"))
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization,Accept")
-        response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-        response.headers.add("Access-Control-Allow-Credentials", "true")
-        response.headers.add("Access-Control-Max-Age", "3600")
+        response.headers.add('Access-Control-Allow-Origin', 'https://gerador-prompt-frontend-rc35.vercel.app')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Max-Age', '3600')
         return response
 
-# 2. INJETOR DE HEADERS APÓS CADA REQUEST
 @app.after_request
 def add_cors_headers(response):
-    origin = request.headers.get('Origin')
-    if origin in ALLOWED_ORIGINS:
-        response.headers.add("Access-Control-Allow-Origin", origin)
-    else:
-        response.headers.add("Access-Control-Allow-Origin", "https://gerador-prompt-frontend-rc35.vercel.app")
-    
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization,Accept")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-    response.headers.add("Access-Control-Allow-Credentials", "true")
-    response.headers.add("Vary", "Origin")
+    response.headers['Access-Control-Allow-Origin'] = 'https://gerador-prompt-frontend-rc35.vercel.app'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Accept'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    response.headers['Vary'] = 'Origin'
     return response
 
 # --- CONFIGURAÇÕES ---
@@ -142,22 +126,24 @@ def generate_prompt():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # 2. VEO 3 & SORA 2 (Foco do erro)
-@app.route('/generate-veo3-prompt', methods=['POST'])
-@app.route('/generate-video-prompt', methods=['POST'])
+@app.route('/generate-veo3-prompt', methods=['POST', 'OPTIONS'])
+@cross_origin()
 def generate_video_prompt():
     try:
         data = request.get_json(force=True) or {}
-        if isinstance(data, str): data = json.loads(data)
+        if isinstance(data, str): 
+            data = json.loads(data)
 
         user_id = data.get('user_id')
         if user_id:
             s, m = check_and_deduct_credit(user_id)
-            if not s: return jsonify({'error': m}), 402
+            if not s: 
+                return jsonify({'error': m}), 402
 
-        # FLEXIBILIDADE DE NOMES
         idea = data.get('idea') or data.get('prompt') or data.get('text') or data.get('scene')
         
-        if not idea: return jsonify({'error': 'Ideia não fornecida'}), 400
+        if not idea: 
+            return jsonify({'error': 'Ideia não fornecida'}), 400
 
         target_model = data.get('model', 'Veo 3')
         style = data.get('style', '')
@@ -166,8 +152,10 @@ def generate_video_prompt():
         audio = data.get('audio', '')
 
         base_instruction = "Crie um prompt OTIMIZADO PARA VÍDEO."
-        if target_model == 'Sora 2': base_instruction += " Foco em física realista (Sora)."
-        else: base_instruction += " Foco cinematográfico (Veo)."
+        if target_model == 'Sora 2': 
+            base_instruction += " Foco em física realista (Sora)."
+        else: 
+            base_instruction += " Foco cinematográfico (Veo)."
 
         prompt = f"""
         {base_instruction}
@@ -176,8 +164,35 @@ def generate_video_prompt():
         """
         
         response = model.generate_content(prompt)
-        return jsonify({'advanced_prompt': response.text, 'prompt': response.text})
-    except Exception as e: return jsonify({'error': str(e)}), 500
+        
+        # Salvar no histórico
+        if user_id and supabase:
+            try:
+                supabase.table('user_history').insert({
+                    'user_id': user_id,
+                    'tool_type': 'video_prompt',
+                    'tool_name': f'Gerador Prompt {target_model}',
+                    'input_data': json.dumps({
+                        'idea': idea,
+                        'style': style,
+                        'camera': camera,
+                        'lighting': lighting,
+                        'audio': audio
+                    })[:500],
+                    'output_data': str(response.text)[:2000]
+                }).execute()
+            except Exception as e:
+                print(f"Erro ao salvar histórico: {e}")
+                
+        return jsonify({
+            'advanced_prompt': response.text, 
+            'prompt': response.text,
+            'status': 'success'
+        })
+        
+    except Exception as e: 
+        print(f"Erro na rota /generate-veo3-prompt: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # 3. RESUMIDOR DE VÍDEO
 @app.route('/summarize-video', methods=['POST'])
